@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
   defaultDraftStory,
@@ -142,6 +142,10 @@ function Badge({ children, tone = 'light' }) {
   }
 
   return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${tones[tone]}`}>{children}</span>
+}
+
+function EditorialMetaTag({ children, className = '' }) {
+  return <span className={`editorial-meta-tag ${className}`}>{children}</span>
 }
 
 function StoryCard({ card, transformStyle = {}, className = '' }) {
@@ -316,19 +320,61 @@ function SectionHeading({ eyebrow, title, description, className = 'max-w-2xl', 
   )
 }
 
-function ScrollToTopButton() {
+function HomeSnapSection({ children, className = '', contentClassName = '' }) {
+  const sectionRef = useRef(null)
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
+    if (!sectionRef.current || typeof window === 'undefined') {
+      return undefined
+    }
+
+    const observer = new window.IntersectionObserver(
+      ([entry]) => {
+        setVisible(entry.isIntersecting)
+      },
+      { threshold: 0.45 },
+    )
+
+    observer.observe(sectionRef.current)
+
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <section ref={sectionRef} className={`snap-start h-screen w-full ${className}`}>
+      <div className={`grid h-full w-full place-items-center px-1 pb-8 pt-32 sm:pb-10 sm:pt-36 ${contentClassName}`}>
+        <div className={`fade-in-up w-full ${visible ? 'is-visible' : ''}`}>{children}</div>
+      </div>
+    </section>
+  )
+}
+
+function ScrollToTopButton() {
+  const location = useLocation()
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    const homeScrollContainer = document.querySelector('[data-home-scroll="true"]')
+
     const handleScroll = () => {
+      if (location.pathname === '/' && homeScrollContainer) {
+        setVisible(homeScrollContainer.scrollTop > 220)
+        return
+      }
+
       setVisible(window.scrollY > 480)
     }
 
     handleScroll()
     window.addEventListener('scroll', handleScroll)
+    homeScrollContainer?.addEventListener('scroll', handleScroll)
 
-    return () => window.removeEventListener('scroll', handleScroll)
-  }, [])
+    return () => {
+      window.removeEventListener('scroll', handleScroll)
+      homeScrollContainer?.removeEventListener('scroll', handleScroll)
+    }
+  }, [location.pathname])
 
   if (!visible) {
     return null
@@ -338,7 +384,16 @@ function ScrollToTopButton() {
     <button
       aria-label="Back to top"
       className="fixed bottom-6 right-6 z-30 inline-flex h-12 w-12 items-center justify-center rounded-full border border-white/70 bg-stone-900 text-white shadow-[0_24px_50px_-24px_rgba(41,37,36,0.85)] transition hover:-translate-y-0.5 hover:bg-stone-800 sm:bottom-8 sm:right-8"
-      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      onClick={() => {
+        const homeScrollContainer = document.querySelector('[data-home-scroll="true"]')
+
+        if (location.pathname === '/' && homeScrollContainer) {
+          homeScrollContainer.scrollTo({ top: 0, behavior: 'smooth' })
+          return
+        }
+
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      }}
       type="button"
     >
       <svg aria-hidden="true" className="h-5 w-5" fill="none" viewBox="0 0 24 24">
@@ -351,12 +406,17 @@ function ScrollToTopButton() {
 
 function AppShell({ children, onStart, onNavigate, consentAccepted }) {
   const location = useLocation()
+  const isHome = location.pathname === '/'
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.18),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(13,148,136,0.14),_transparent_24%),linear-gradient(180deg,_#f8f3eb_0%,_#fcfaf6_48%,_#f1ebe0_100%)] text-stone-800">
-      <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-4 pb-12 pt-6 sm:px-6 lg:px-8">
-        <header className="sticky top-4 z-20 mb-8">
-          <div className="rounded-[28px] border border-white/60 bg-white/75 px-5 py-4 shadow-[0_30px_80px_-40px_rgba(87,63,38,0.45)] backdrop-blur">
+      <div
+        className={`mx-auto max-w-7xl px-4 pt-6 sm:px-6 lg:px-8 ${
+          isHome ? 'relative h-screen overflow-hidden' : 'flex min-h-screen flex-col pb-12'
+        }`}
+      >
+        <header className={isHome ? 'pointer-events-none absolute inset-x-4 top-6 z-20 sm:inset-x-6 lg:inset-x-8' : 'sticky top-4 z-20 mb-8'}>
+          <div className="pointer-events-auto rounded-[28px] border border-white/60 bg-white/75 px-5 py-4 shadow-[0_30px_80px_-40px_rgba(87,63,38,0.45)] backdrop-blur">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <button className="text-left" onClick={() => onNavigate('/')} type="button">
@@ -388,10 +448,12 @@ function AppShell({ children, onStart, onNavigate, consentAccepted }) {
             </div>
           </div>
         </header>
-        <main className="flex-1">{children}</main>
-        <footer className="mt-16 border-t border-stone-200/70 py-8 text-sm text-stone-500">
-          PathWeave is a First Nations-informed concept prototype designed to support culturally responsive storytelling.
-        </footer>
+        <main className={isHome ? 'h-full' : 'flex-1'}>{children}</main>
+        {!isHome ? (
+          <footer className="mt-16 border-t border-stone-200/70 py-8 text-sm text-stone-500">
+            PathWeave is a First Nations-informed concept prototype designed to support culturally responsive storytelling.
+          </footer>
+        ) : null}
       </div>
       <ScrollToTopButton />
     </div>
@@ -403,9 +465,10 @@ function LandingPage({ onStart, onSeeExample, onGoAbout, profile, stories }) {
   const exampleTags = [...new Set(stories.flatMap((story) => story.acceptedTags || story.tags || []))].slice(0, 4)
 
   return (
-    <div className="space-y-24 pb-6">
-      <section className="grid min-h-[90vh] content-center gap-12 py-4 lg:grid-cols-[0.9fr_1.1fr] lg:items-center lg:py-0">
-        <div className="max-w-2xl self-center">
+    <div className="h-full overflow-y-scroll scroll-smooth scrollbar-hide snap-y snap-mandatory" data-home-scroll="true">
+      <HomeSnapSection contentClassName="items-center">
+        <div className="grid w-full gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+          <div className="max-w-2xl self-center">
           <p className="text-xs uppercase tracking-[0.34em] text-stone-500">Narrative Sovereignty</p>
           <h1 className="mt-6 font-display text-6xl leading-[0.96] text-stone-900 md:text-7xl xl:text-[5.5rem]">
             PathWeave
@@ -417,10 +480,7 @@ function LandingPage({ onStart, onSeeExample, onGoAbout, profile, stories }) {
             PathWeave is a storytelling and portfolio platform designed to support more respectful, non-linear ways of
             representing experience.
           </p>
-          <div className="mt-6 max-w-xl text-sm leading-7 text-stone-500">
-            A concept platform for narrative portfolios, community-held context, and careful user-controlled sharing.
-          </div>
-          <div className="mt-10 flex flex-wrap gap-4">
+          <div className="mt-9 flex flex-wrap gap-4">
             <button
               className="linear-button-sheen rounded-full border border-white/20 bg-stone-900 px-6 py-3 text-sm font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_16px_36px_-20px_rgba(26,26,26,0.6)] transition hover:-translate-y-0.5 hover:bg-black"
               onClick={onStart}
@@ -436,59 +496,44 @@ function LandingPage({ onStart, onSeeExample, onGoAbout, profile, stories }) {
               See example
             </button>
           </div>
-          <div className="mt-8 flex flex-wrap gap-2">
-            <Badge tone="accent">Story before format</Badge>
-            <Badge tone="soft">Community-aware</Badge>
-            <Badge>User control</Badge>
+          </div>
+
+          <div className="relative self-center">
+            <WeaveVisual stories={stories} />
           </div>
         </div>
+      </HomeSnapSection>
 
-        <div className="relative self-center">
-          <WeaveVisual stories={stories} />
+      <HomeSnapSection>
+        <div className="grid w-full gap-6">
+          <SectionHeading
+            eyebrow="Why This Is Different"
+            title="A different way to represent experience"
+            description="PathWeave stays grounded in story, context, and connection instead of collapsing experience into titles, bullet points, or keyword logic."
+          />
+          <TridentSection />
         </div>
-      </section>
+      </HomeSnapSection>
 
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="Why This Is Different"
-          title="A different way to represent experience"
-          description="PathWeave stays grounded in story, context, and connection instead of collapsing experience into titles, bullet points, or keyword logic."
-        />
-        <TridentSection />
-      </section>
-
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="How It Works"
-          title="How PathWeave works"
-          description="The process stays simple and guided, so the experience feels calm and lightweight from the beginning."
-        />
-        <div className="grid gap-6 lg:grid-cols-3">
-          <StepCard
-            index="01"
-            title="Start with your story"
-            text="Write a short narrative about your experience."
+      <HomeSnapSection>
+        <div className="grid w-full gap-6">
+          <SectionHeading
+            eyebrow="How It Works"
+            title="How PathWeave works"
+            description="The process stays simple and guided, so the experience feels calm and lightweight from the beginning."
           />
-          <StepCard
-            index="02"
-            title="Add connections"
-            text="Include people, community, and meaning behind your story."
-          />
-          <StepCard
-            index="03"
-            title="Shape your PathWeave"
-            text="Your stories become a shareable portfolio."
-          />
+          <ContinuousTrajectorySection />
         </div>
-      </section>
+      </HomeSnapSection>
 
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="Example Preview"
-          title="What your PathWeave can look like"
-          description="This is an example. Your PathWeave can look different."
-        />
-        <div className="rounded-[40px] border border-stone-200/80 bg-white/80 p-6 shadow-soft sm:p-8">
+      <HomeSnapSection>
+        <div className="grid w-full gap-6">
+          <SectionHeading
+            eyebrow="Example Preview"
+            title="What your PathWeave can look like"
+            description="This is an example. Your PathWeave can look different."
+          />
+          <div className="rounded-[40px] border border-stone-200/80 bg-white/80 p-6 shadow-soft sm:p-8">
           <div className="grid gap-8 lg:grid-cols-[1fr_0.9fr]">
             <div>
               <p className="font-display text-4xl text-stone-900">{profile.name}</p>
@@ -553,23 +598,24 @@ function LandingPage({ onStart, onSeeExample, onGoAbout, profile, stories }) {
               View example
             </button>
           </div>
+          </div>
         </div>
-      </section>
+      </HomeSnapSection>
 
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="Export / Output"
-          title="Share your PathWeave in different ways"
-          description="Outputs stay secondary to story, with options that support different sharing contexts."
-        />
-        <div className="grid gap-6 md:grid-cols-3">
-          <OutputCard title="Full PathWeave" text="A complete narrative portfolio." />
-          <OutputCard title="Summary" text="A shorter version that still keeps your story." />
-          <OutputCard title="Structured" text="A format that can connect with external systems." />
+      <HomeSnapSection>
+        <div className="grid w-full gap-6">
+          <SectionHeading
+            eyebrow="Export / Output"
+            title="Share your PathWeave in different ways"
+            description="Outputs stay secondary to story, with options that support different sharing contexts."
+          />
+          <TransformationExportSection />
         </div>
-      </section>
+      </HomeSnapSection>
 
-      <ShowcaseClosingSection />
+      <HomeSnapSection contentClassName="items-center">
+        <ShowcaseClosingSection />
+      </HomeSnapSection>
     </div>
   )
 }
@@ -594,6 +640,9 @@ function EntrySafetyModal({ open, onClose, onLearnMore }) {
             <div className="mx-auto mt-6 max-w-2xl space-y-4 text-base leading-8 text-stone-600">
             <p>
               PathWeave is a concept platform designed to support respectful storytelling and self-representation.
+            </p>
+            <p>
+              A concept platform for narrative portfolios, community-held context, and careful user-controlled sharing.
             </p>
             <p>
               Some stories, images, audio, video, names, or cultural knowledge may be personal, sensitive, or
@@ -1138,23 +1187,217 @@ function GeometryIcon({ variant }) {
   )
 }
 
-function OutputCard({ title, text }) {
+function ExportMiniPreview({ type }) {
+  if (type === 'full') {
+    return (
+      <div className="flex h-16 w-12 flex-col gap-1.5 rounded-[10px] border border-black/6 bg-white/34 p-2">
+        <div className="h-2.5 rounded-sm bg-stone-300/60" />
+        <div className="h-1.5 rounded-sm bg-stone-200/70" />
+        <div className="h-1.5 rounded-sm bg-stone-200/60" />
+        <div className="h-1.5 rounded-sm bg-stone-200/55" />
+        <div className="mt-auto h-1.5 rounded-sm bg-stone-200/45" />
+      </div>
+    )
+  }
+
+  if (type === 'summary') {
+    return (
+      <div className="flex h-14 w-20 flex-col justify-center gap-2 rounded-[10px] border border-black/6 bg-white/30 px-3">
+        <div className="h-1.5 w-full rounded-sm bg-stone-300/60" />
+        <div className="h-1.5 w-4/5 rounded-sm bg-stone-200/70" />
+        <div className="h-1.5 w-3/5 rounded-sm bg-stone-200/55" />
+      </div>
+    )
+  }
+
   return (
-    <article className="precision-panel-quiet rounded-[28px] p-6 transition hover:-translate-y-1">
-      <p className="text-xs uppercase tracking-[0.24em] text-stone-400">Output</p>
-      <h3 className="mt-4 font-display text-2xl text-stone-900">{title}</h3>
-      <p className="mt-4 text-sm leading-7 text-stone-600">{text}</p>
+    <div className="grid h-14 w-16 place-items-center rounded-[10px] border border-black/6 bg-white/30 text-stone-500">
+      <svg aria-hidden="true" className="h-7 w-7" fill="none" viewBox="0 0 24 24">
+        <path d="M8 6.5H6.5V17.5H8" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+        <path d="M16 6.5H17.5V17.5H16" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+        <path d="M10 9h4" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+        <path d="M10 12h4" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+        <path d="M10 15h4" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+      </svg>
+    </div>
+  )
+}
+
+function ExportLens({ item, active, onEnter, onLeave, alignClass, style }) {
+  return (
+    <article
+      className={`group relative overflow-hidden rounded-[22px] border border-white/35 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_18px_35px_-28px_rgba(26,26,26,0.22)] backdrop-blur-[16px] transition duration-300 ${alignClass} ${
+        active
+          ? 'bg-[linear-gradient(180deg,rgba(255,238,212,0.78),rgba(255,247,235,0.4))]'
+          : 'bg-white/28'
+      }`}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+      style={style}
+    >
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02))]" />
+      <div className="relative grid gap-5 md:grid-cols-[92px_1fr] md:items-center">
+        <div className="flex justify-start md:justify-center">
+          <ExportMiniPreview type={item.type} />
+        </div>
+        <div className="grid gap-4 md:grid-cols-[0.9fr_1.1fr]">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.32em] text-stone-500">{item.label}</p>
+            <h3 className="mt-3 font-display text-[1.9rem] leading-tight text-stone-900">{item.title}</h3>
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.32em] text-stone-500">Context</p>
+            <p className="mt-3 text-sm leading-7 text-stone-600">{item.text}</p>
+          </div>
+        </div>
+      </div>
+      {active ? (
+        <>
+          <div className="pointer-events-none absolute inset-0 rounded-[22px] ring-1 ring-amber-300/55" />
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(201,151,69,0.22),transparent_38%)]" />
+        </>
+      ) : null}
     </article>
   )
 }
 
-function TridentPanel({ title, text, variant }) {
+function TransformationExportSection() {
+  const [hovered, setHovered] = useState(null)
+  const [pointerOffset, setPointerOffset] = useState({ x: 0, y: 0 })
+  const items = [
+    {
+      type: 'full',
+      label: 'Portfolio',
+      title: 'Digital Presence',
+      text: 'An immersive personal page for deeper sharing, self-representation, and narrative presence.',
+      alignClass: '',
+      path: 'M 154 260 C 250 188, 430 124, 716 128',
+    },
+    {
+      type: 'summary',
+      label: 'Print',
+      title: 'Focused Narrative',
+      text: 'A concise export suited to moments where a quick first impression still needs story and context.',
+      alignClass: '',
+      path: 'M 154 260 C 292 246, 488 246, 722 266',
+    },
+    {
+      type: 'structured',
+      label: 'Data',
+      title: 'Data Sovereignty',
+      text: 'A structured export that keeps your story data portable for archives, systems, or personal stewardship.',
+      alignClass: '',
+      path: 'M 154 260 C 264 336, 452 404, 728 404',
+    },
+  ]
+
+  const handleMove = (event) => {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = ((event.clientX - bounds.left) / bounds.width - 0.5) * 12
+    const y = ((event.clientY - bounds.top) / bounds.height - 0.5) * 10
+    setPointerOffset({ x, y })
+  }
+
   return (
-    <article className="group relative min-h-[280px] overflow-hidden px-2 py-6 sm:px-6">
+    <div
+      className="relative overflow-hidden bg-[radial-gradient(circle,rgba(26,26,26,0.06)_0.6px,transparent_0.6px)] bg-[size:20px_20px] py-6"
+      onMouseLeave={() => setPointerOffset({ x: 0, y: 0 })}
+      onMouseMove={handleMove}
+    >
+      <svg aria-hidden="true" className="pointer-events-none absolute inset-0 hidden h-full w-full md:block" viewBox="0 0 1200 520">
+        <defs>
+          <linearGradient id="export-line-base" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stopColor="rgba(201,151,69,0.36)" />
+            <stop offset="52%" stopColor="rgba(120,112,99,0.16)" />
+            <stop offset="100%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+          <linearGradient id="export-line-active" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stopColor="rgba(201,151,69,0.76)" />
+            <stop offset="55%" stopColor="rgba(201,151,69,0.42)" />
+            <stop offset="100%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+        </defs>
+        {items.map((item) => (
+          <path
+            key={item.type}
+            d={item.path}
+            fill="none"
+            stroke={hovered === item.type ? 'url(#export-line-active)' : 'url(#export-line-base)'}
+            strokeLinecap="round"
+            strokeWidth={hovered === item.type ? '0.9' : '0.5'}
+            style={{
+              filter: hovered === item.type ? 'drop-shadow(0 0 4px rgba(201,151,69,0.24))' : 'none',
+              opacity: hovered === item.type ? 1 : 0.85,
+              transform: `translate(${pointerOffset.x * 0.6}px, ${pointerOffset.y * 0.4}px)`,
+              transformOrigin: 'center',
+              transition: 'transform 260ms ease-out, opacity 220ms ease-out, stroke-width 220ms ease-out',
+            }}
+          />
+        ))}
+      </svg>
+
+      <div className="relative grid gap-10 lg:grid-cols-[320px_1fr] lg:items-center">
+        <div className="relative min-h-[420px]">
+          <div
+            className="precision-panel absolute left-10 top-1/2 grid h-56 w-56 -translate-y-1/2 place-items-center rounded-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.86),rgba(249,249,248,0.56))] transition-transform duration-300 ease-out"
+            style={{ transform: `translate3d(${pointerOffset.x * 0.18}px, calc(-50% + ${pointerOffset.y * 0.18}px), 0)` }}
+          >
+            <div className="grid max-w-[11rem] place-items-center gap-2 text-center">
+              <p className="text-[11px] uppercase tracking-[0.34em] text-stone-500">Weave Core</p>
+              <p className="font-display text-3xl text-stone-900">Source</p>
+              <p className="text-sm leading-6 text-stone-600">One narrative source, radiating into different forms of sharing.</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="relative grid gap-5">
+          {items.map((item, index) => (
+            <ExportLens
+              key={item.type}
+              active={hovered === item.type}
+              alignClass={item.alignClass}
+              item={item}
+              onEnter={() => setHovered(item.type)}
+              onLeave={() => setHovered(null)}
+              style={{
+                transform: `translate3d(${pointerOffset.x * (0.08 + index * 0.04)}px, ${pointerOffset.y * (0.1 + index * 0.05)}px, 0)`,
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NarrativeNode({ active = false }) {
+  return (
+    <div className="relative h-4 w-4">
+      <span
+        className={`absolute inset-0 rounded-full transition ${active ? 'bg-amber-300/55 blur-[6px]' : 'bg-stone-300/45 blur-[4px]'}`}
+      />
+      <span
+        className={`absolute left-1/2 top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full transition ${active ? 'bg-amberline shadow-[0_0_0_3px_rgba(201,151,69,0.16)]' : 'bg-stone-500'}`}
+      />
+    </div>
+  )
+}
+
+function TridentPanel({ title, text, variant, active, destination, offsetClass = '', onEnter, onLeave }) {
+  return (
+    <article
+      className={`group relative min-h-[280px] overflow-hidden px-2 py-8 sm:px-6 ${offsetClass}`}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+    >
       <div className="absolute inset-0 bg-transparent transition duration-500 group-hover:weave-focus" />
       <div className="relative">
+        <NarrativeNode active={active} />
         <GeometryIcon variant={variant} />
-        <h3 className="mt-10 font-display text-[2rem] leading-tight text-stone-900">{title}</h3>
+        <p className="mt-8 text-[11px] uppercase tracking-[0.34em] text-stone-500">
+          {destination ? 'Shared destination' : 'Story pathway'}
+        </p>
+        <h3 className="mt-4 font-display text-[2rem] leading-tight text-stone-900">{title}</h3>
         <p className="mt-5 max-w-sm text-sm leading-7 text-stone-600">{text}</p>
       </div>
     </article>
@@ -1162,24 +1405,240 @@ function TridentPanel({ title, text, variant }) {
 }
 
 function TridentSection() {
+  const [hovered, setHovered] = useState(null)
+  const firstPathActive = hovered === 0 || hovered === 1
+  const secondPathActive = hovered === 1 || hovered === 2
+
   return (
-    <div className="precision-panel overflow-hidden rounded-[34px] bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(248,247,243,0.68))]">
-      <div className="grid divide-y divide-black/6 md:grid-cols-3 md:divide-x md:divide-y-0">
+    <div className="relative overflow-hidden bg-[radial-gradient(circle,rgba(26,26,26,0.06)_0.6px,transparent_0.6px)] bg-[size:20px_20px] py-6">
+      <svg aria-hidden="true" className="pointer-events-none absolute left-0 top-0 hidden h-full w-full md:block" viewBox="0 0 1200 360">
+        <defs>
+          <linearGradient id="narrative-path-base" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stopColor="rgba(201,151,69,0)" />
+            <stop offset="45%" stopColor="rgba(26,26,26,0.18)" />
+            <stop offset="55%" stopColor="rgba(201,151,69,0.22)" />
+            <stop offset="100%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+          <linearGradient id="narrative-path-active" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stopColor="rgba(201,151,69,0)" />
+            <stop offset="50%" stopColor="rgba(201,151,69,0.72)" />
+            <stop offset="100%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M 146 112 C 256 74, 328 78, 518 144"
+          fill="none"
+          opacity={firstPathActive ? 1 : 0.72}
+          stroke={firstPathActive ? 'url(#narrative-path-active)' : 'url(#narrative-path-base)'}
+          strokeLinecap="round"
+          strokeWidth={firstPathActive ? '0.8' : '0.5'}
+          style={{ filter: firstPathActive ? 'drop-shadow(0 0 2px rgba(201,151,69,0.32))' : 'none' }}
+          className={firstPathActive ? 'animate-pulse' : ''}
+        />
+        <path
+          d="M 548 152 C 696 214, 824 202, 1030 164"
+          fill="none"
+          opacity={secondPathActive ? 1 : 0.72}
+          stroke={secondPathActive ? 'url(#narrative-path-active)' : 'url(#narrative-path-base)'}
+          strokeLinecap="round"
+          strokeWidth={secondPathActive ? '0.8' : '0.5'}
+          style={{ filter: secondPathActive ? 'drop-shadow(0 0 2px rgba(201,151,69,0.36))' : 'none' }}
+          className={secondPathActive ? 'animate-pulse' : ''}
+        />
+      </svg>
+
+      <div className="grid gap-6 md:grid-cols-3">
         <TridentPanel
           title="Not just roles and titles"
           text="Share experiences and stories instead of listing job positions."
           variant="roles"
+          active={hovered === 0}
+          offsetClass="md:pt-0"
+          onEnter={() => setHovered(0)}
+          onLeave={() => setHovered(null)}
         />
         <TridentPanel
           title="Stories stay stories"
           text="Your narrative is not reduced into bullet points or keywords."
           variant="story"
+          active={hovered === 1}
+          offsetClass="md:pt-5"
+          onEnter={() => setHovered(1)}
+          onLeave={() => setHovered(null)}
         />
         <TridentPanel
           title="Community matters"
           text="Show connections, contribution, and relationships."
           variant="community"
+          active={hovered === 2}
+          destination
+          offsetClass="md:pt-10"
+          onEnter={() => setHovered(2)}
+          onLeave={() => setHovered(null)}
         />
+      </div>
+    </div>
+  )
+}
+
+function ContinuousTrajectorySection() {
+  const sectionRef = useRef(null)
+  const [progress, setProgress] = useState(0)
+  const [pointerOffset, setPointerOffset] = useState({ x: 0, y: 0 })
+  const [pointerRatio, setPointerRatio] = useState(null)
+
+  useEffect(() => {
+    const updateProgress = () => {
+      if (!sectionRef.current) {
+        return
+      }
+
+      const rect = sectionRef.current.getBoundingClientRect()
+      const viewportHeight = window.innerHeight || 1
+      const visible = Math.min(Math.max((viewportHeight - rect.top) / (rect.height + viewportHeight * 0.25), 0), 1)
+      setProgress(visible)
+    }
+
+    updateProgress()
+    window.addEventListener('scroll', updateProgress, { passive: true })
+    window.addEventListener('resize', updateProgress)
+
+    return () => {
+      window.removeEventListener('scroll', updateProgress)
+      window.removeEventListener('resize', updateProgress)
+    }
+  }, [])
+
+  const pathLength = 1400
+  const dashOffset = pathLength * (1 - progress)
+  const pathOpacity = 0.18 + progress * 0.82
+  const stepFocusStops = [0.18, 0.5, 0.84]
+  const nearestStepIndex =
+    pointerRatio == null
+      ? null
+      : stepFocusStops.reduce(
+          (bestIndex, stop, index, arr) =>
+            Math.abs(stop - pointerRatio) < Math.abs(arr[bestIndex] - pointerRatio) ? index : bestIndex,
+          0,
+        )
+  const steps = [
+    {
+      index: '01',
+      title: 'Start with your story',
+      text: 'Write a short narrative about your experience.',
+      align: 'md:max-w-[19rem] md:justify-self-start md:pt-0',
+    },
+    {
+      index: '02',
+      title: 'Add connections',
+      text: 'Include people, community, and meaning behind your story.',
+      align: 'md:max-w-[19rem] md:justify-self-center md:pt-16',
+    },
+    {
+      index: '03',
+      title: 'Shape your PathWeave',
+      text: 'Your stories become a shareable portfolio.',
+      align: 'md:max-w-[19rem] md:justify-self-end md:pt-28',
+    },
+  ]
+
+  const handleMove = (event) => {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = ((event.clientX - bounds.left) / bounds.width - 0.5) * 20
+    const y = ((event.clientY - bounds.top) / bounds.height - 0.5) * 16
+    const ratio = Math.min(Math.max((event.clientX - bounds.left) / bounds.width, 0), 1)
+    setPointerOffset({ x, y })
+    setPointerRatio(ratio)
+  }
+
+  return (
+    <div
+      ref={sectionRef}
+      className="relative overflow-hidden bg-[radial-gradient(circle,rgba(26,26,26,0.06)_0.6px,transparent_0.6px)] bg-[size:20px_20px] py-10"
+      onMouseLeave={() => {
+        setPointerOffset({ x: 0, y: 0 })
+        setPointerRatio(null)
+      }}
+      onMouseMove={handleMove}
+    >
+      <svg aria-hidden="true" className="pointer-events-none absolute inset-0 hidden h-full w-full md:block" viewBox="0 0 1200 520">
+        <defs>
+          <linearGradient id="trajectory-line" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stopColor="rgba(249,249,248,0)" />
+            <stop offset="40%" stopColor="rgba(152,139,119,0.22)" />
+            <stop offset="72%" stopColor="rgba(201,151,69,0.52)" />
+            <stop offset="100%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+          <linearGradient id="trajectory-focus-0" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stopColor="rgba(201,151,69,0)" />
+            <stop offset="10%" stopColor="rgba(201,151,69,0.85)" />
+            <stop offset="26%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+          <linearGradient id="trajectory-focus-1" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="34%" stopColor="rgba(201,151,69,0)" />
+            <stop offset="50%" stopColor="rgba(201,151,69,0.85)" />
+            <stop offset="66%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+          <linearGradient id="trajectory-focus-2" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="74%" stopColor="rgba(201,151,69,0)" />
+            <stop offset="88%" stopColor="rgba(201,151,69,0.85)" />
+            <stop offset="100%" stopColor="rgba(201,151,69,0)" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M 72 112 C 232 82, 308 112, 420 190 S 656 312, 760 298 S 970 266, 1120 396"
+          fill="none"
+          stroke="url(#trajectory-line)"
+          strokeLinecap="round"
+          strokeWidth="0.8"
+          style={{
+            opacity: pathOpacity,
+            strokeDasharray: pathLength,
+            strokeDashoffset: dashOffset,
+            transform: `translate(${pointerOffset.x * 0.45}px, ${pointerOffset.y * 0.45}px)`,
+            transformOrigin: 'center',
+            transition: 'stroke-dashoffset 220ms ease-out, opacity 220ms ease-out, transform 260ms ease-out',
+          }}
+        />
+        {nearestStepIndex != null ? (
+          <path
+            d="M 72 112 C 232 82, 308 112, 420 190 S 656 312, 760 298 S 970 266, 1120 396"
+            fill="none"
+            stroke={`url(#trajectory-focus-${nearestStepIndex})`}
+            strokeLinecap="round"
+            strokeWidth="1.25"
+            style={{
+              opacity: 0.82,
+              strokeDasharray: pathLength,
+              strokeDashoffset: dashOffset,
+              transform: `translate(${pointerOffset.x * 0.5}px, ${pointerOffset.y * 0.5}px)`,
+              transformOrigin: 'center',
+              filter: 'drop-shadow(0 0 4px rgba(201,151,69,0.22))',
+              transition: 'stroke-dashoffset 220ms ease-out, transform 260ms ease-out, opacity 220ms ease-out',
+            }}
+          />
+        ) : null}
+      </svg>
+
+      <div className="relative grid gap-10 md:grid-cols-3 md:gap-6">
+        {steps.map((step, index) => (
+          <article
+            key={step.index}
+            className={`relative transition-transform duration-300 ease-out ${step.align}`}
+            style={{
+              transform: `translate3d(${pointerOffset.x * (0.12 + index * 0.08)}px, ${pointerOffset.y * (0.16 + index * 0.05)}px, 0)`,
+            }}
+          >
+            <p className={`font-display text-6xl leading-none md:text-7xl ${nearestStepIndex === index ? 'text-amber-900/45' : 'text-stone-900/40'}`}>{step.index}</p>
+            <h3 className="mt-5 font-display text-[2rem] leading-tight text-stone-900">{step.title}</h3>
+            <p className="mt-4 max-w-sm text-sm leading-7 text-stone-600">{step.text}</p>
+            <div
+              aria-hidden="true"
+              className="mt-6 h-px w-20 bg-[linear-gradient(90deg,rgba(201,151,69,0),rgba(201,151,69,0.42),rgba(201,151,69,0))]"
+              style={{ opacity: (nearestStepIndex === index ? 0.62 : 0.28) + progress * (0.24 + index * 0.08) }}
+            />
+          </article>
+        ))}
       </div>
     </div>
   )
