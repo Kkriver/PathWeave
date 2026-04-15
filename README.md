@@ -132,5 +132,4 @@ npm run build
 ## Repository Notes
 
 - Main branch: `main`
-- Recommended feature branch prefix: `codex/`
 - This repository is intended as a concept prototype, not a production deployment
