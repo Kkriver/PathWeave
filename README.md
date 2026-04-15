@@ -1,27 +1,37 @@
 # PathWeave
 
-PathWeave is a React + Tailwind concept prototype for a culturally responsive storytelling and portfolio platform. It is intentionally not a resume builder. The product starts by showing the experience first, then invites people to create their own version with narrative, community, and future pathways at the centre.
+PathWeave is a React + Tailwind concept prototype for a culturally responsive storytelling and narrative portfolio platform.
 
-## Concept
+It is intentionally not a resume builder. The experience is designed around story, community, pathways, and careful sharing rather than bullet points, chronology, or keyword-first self-presentation.
 
-PathWeave explores a different framing for representing experience:
+## Overview
+
+PathWeave explores a different way to represent experience:
 
 - narrative instead of bullet points
 - community instead of only individual achievement
 - pathways instead of linear job history
 - translation and export as optional layers rather than the main goal
 
-The prototype follows this flow:
+The current prototype includes:
 
-1. Landing page showcase
-2. Example profile
-3. Cultural safety modal
-4. Profile creation
-5. Story builder
-6. Journey view
-7. Portfolio view
-8. Tag review
-9. Export system
+- a showcase-first landing page
+- a dedicated About page
+- an example narrative portfolio
+- a 6-step guided builder
+- optional tag review and privacy controls
+- multiple export formats
+
+## Experience Flow
+
+The product follows a show-first, then-create structure:
+
+1. Showcase landing page
+2. Example portfolio
+3. Respectful storytelling notice
+4. Guided builder
+5. Review and optional tags
+6. Share and export
 
 ## Design Philosophy
 
@@ -35,7 +45,7 @@ The prototype follows this flow:
 
 PathWeave is described as a First Nations-informed concept prototype, not a universal cultural model.
 
-The prototype includes a cultural safety modal before creation begins. It reminds users that:
+The prototype includes respectful storytelling prompts and review controls that remind users:
 
 - they choose what to share
 - some knowledge may be private, sensitive, or community-held
@@ -46,7 +56,7 @@ This idea continues through the product via privacy settings on story cards, opt
 
 ## Export System
 
-The export layer is intentionally secondary to story.
+The export layer is intentionally secondary to story. Current export modes are:
 
 - **Shared View**: the main export, keeping the full narrative and portfolio structure.
 - **Summary Export**: a shorter version that preserves story rather than flattening it into bullet points.
@@ -70,17 +80,28 @@ The structured preview uses this shape:
 }
 ```
 
-## Demo Data
+## Builder Steps
 
-The app is seeded with example profile content grounded in:
+The guided builder is organised into six steps:
+
+1. **Story**: begin with a narrative introduction
+2. **Connections**: add people, place, and who was involved or benefited
+3. **Pathways**: describe interests, aspirations, and future directions
+4. **Stories**: add story cards with embedded media
+5. **Review**: check story visibility, privacy, and optional tags
+6. **Share**: choose an output format and confirm export content
+
+## Demo Content
+
+The prototype is seeded with example content grounded in:
 
 - a mentoring story
 - a community support story
 - a creative work story
 
-The seeded draft profile gives the prototype enough content to feel complete on first load while still letting users edit the narrative and add new story cards.
+This makes the app feel complete on first load while still allowing users to edit, review, and extend the content.
 
-## Tech
+## Tech Stack
 
 - React
 - React Router
@@ -88,10 +109,17 @@ The seeded draft profile gives the prototype enough content to feel complete on 
 - Vite
 - local component state with `localStorage` persistence
 
-## Run
+## Getting Started
+
+Install dependencies:
 
 ```bash
 npm install
+```
+
+Start the dev server:
+
+```bash
 npm run dev
 ```
 
@@ -100,3 +128,9 @@ Production build:
 ```bash
 npm run build
 ```
+
+## Repository Notes
+
+- Main branch: `main`
+- Recommended feature branch prefix: `codex/`
+- This repository is intended as a concept prototype, not a production deployment
