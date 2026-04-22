@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
   defaultDraftStory,
@@ -7,6 +7,12 @@ import {
   exportModeDetails,
   suggestedTagLibrary,
 } from './data/mockData'
+import PathWeaveOutputs from './components/outputs/PathWeaveOutputs'
+import OutputModeSwitcher from './components/outputs/OutputModeSwitcher'
+import FullPathWeaveView from './components/outputs/FullPathWeaveView'
+import SummaryExportView from './components/outputs/SummaryExportView'
+import StructuredJsonView from './components/outputs/StructuredJsonView'
+import { buildPathWeaveOutput } from './utils/buildPathWeaveOutput'
 
 const STORAGE_KEY = 'pathweave-story-state'
 const CONSENT_KEY = 'pathweave-cultural-safety'
@@ -25,7 +31,7 @@ function loadState() {
   if (typeof window === 'undefined') {
     return {
       profile: defaultProfileDraft,
-      stories: defaultProfileDraft.stories,
+      stories: defaultProfileDraft.stories.map((story) => normalizeStory(story)),
       draftStory: defaultDraftStory,
       showTagsInProfile: true,
     }
@@ -35,14 +41,14 @@ function loadState() {
     const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}')
     return {
       profile: saved.profile || defaultProfileDraft,
-      stories: saved.stories || defaultProfileDraft.stories,
+      stories: (saved.stories || defaultProfileDraft.stories).map((story) => normalizeStory(story)),
       draftStory: saved.draftStory || defaultDraftStory,
       showTagsInProfile: saved.showTagsInProfile ?? true,
     }
   } catch {
     return {
       profile: defaultProfileDraft,
-      stories: defaultProfileDraft.stories,
+      stories: defaultProfileDraft.stories.map((story) => normalizeStory(story)),
       draftStory: defaultDraftStory,
       showTagsInProfile: true,
     }
@@ -56,40 +62,60 @@ function splitValue(value) {
     .filter(Boolean)
 }
 
-function buildExportPayload(profile, selectedStories, shareConfig) {
-  const approvedTags = shareConfig.includeTags
-    ? [...new Set(selectedStories.flatMap((story) => story.acceptedTags || []))]
-    : []
+function isTrackedStoryField(value) {
+  return Boolean(value) && typeof value === 'object' && 'value' in value
+}
+
+function normalizeTrackedStoryField(value) {
+  if (isTrackedStoryField(value)) {
+    return {
+      value: String(value.value || '').trim(),
+      isInherited: Boolean(value.isInherited),
+    }
+  }
 
   return {
-    name: profile.name || 'Your PathWeave',
-    intro: profile.narrativeIntro || '',
-    connections: {
-      connectedWith: splitValue(profile.connectedWith),
-      involved: splitValue(profile.involvedPeople),
-      benefited: splitValue(profile.benefitedPeople),
-      place: profile.placeConnection || '',
-      community: profile.communityConnections || '',
-    },
-    pathways: {
-      interests: splitValue(profile.interests),
-      aspirations: splitValue(profile.aspirations),
-      futureDirections: splitValue(profile.futurePathways),
-    },
-    stories: selectedStories.map((story) => ({
-      title: story.title,
-      narrative: story.narrative,
-      location: story.location,
-      involved: splitValue(story.involved || profile.involvedPeople),
-      benefited: splitValue(story.benefited || profile.benefitedPeople),
-      privacy: story.privacy,
-      image: shareConfig.includeMedia ? story.image || '' : '',
-      audio: shareConfig.includeMedia ? story.audio || '' : '',
-      video: shareConfig.includeMedia ? story.video || '' : '',
-      tags: shareConfig.includeTags ? story.acceptedTags || [] : [],
-    })),
-    tags: approvedTags,
+    value: String(value || '').trim(),
+    isInherited: false,
   }
+}
+
+function createTrackedStoryField(profileValue, draftValue) {
+  const storySpecificValue = String(draftValue || '').trim()
+
+  if (storySpecificValue) {
+    return { value: storySpecificValue, isInherited: false }
+  }
+
+  const inheritedValue = String(profileValue || '').trim()
+  return { value: inheritedValue, isInherited: Boolean(inheritedValue) }
+}
+
+function normalizeStory(story) {
+  if (!story) {
+    return story
+  }
+
+  return {
+    ...story,
+    involved: normalizeTrackedStoryField(story.involved),
+    benefited: normalizeTrackedStoryField(story.benefited),
+    contextSnapshot: String(story.contextSnapshot || '').trim(),
+  }
+}
+
+function isPristineDraftStory(story) {
+  return (
+    !String(story?.title || '').trim() &&
+    !String(story?.narrative || '').trim() &&
+    !String(story?.involved || '').trim() &&
+    !String(story?.benefited || '').trim() &&
+    !String(story?.location || '').trim() &&
+    !String(story?.image || '').trim() &&
+    !String(story?.audio || '').trim() &&
+    !String(story?.video || '').trim() &&
+    (story?.privacy || defaultDraftStory.privacy) === defaultDraftStory.privacy
+  )
 }
 
 function firstSentence(value, fallback) {
@@ -103,6 +129,40 @@ function firstSentence(value, fallback) {
   }
 
   return `${text.slice(0, 120).trim()}...`
+}
+
+function createDefaultShareConfig(stories, showTagsInProfile) {
+  return {
+    selectedStories: stories.map((story) => story.id),
+    includeTags: showTagsInProfile,
+    includeMedia: true,
+  }
+}
+
+function buildExampleOutput(example) {
+  const profile = {
+    name: example.name,
+    identityDescription: example.identityLine,
+    placeConnection: example.placeConnection,
+    narrativeIntro: example.narrativeIntro,
+    values: Array.isArray(example.values) ? example.values.join(', ') : '',
+    connectedWith: example.placeConnection,
+    involvedPeople: example.stories.map((story) => story.involved).join(', '),
+    benefitedPeople: example.stories.map((story) => story.benefited).join(', '),
+    communityConnections: example.communityContribution,
+    interests: Array.isArray(example.futurePathways) ? example.futurePathways.slice(0, 2).join(', ') : '',
+    aspirations: Array.isArray(example.futurePathways) ? example.futurePathways.slice(1).join(', ') : '',
+    futurePathways: Array.isArray(example.futurePathways) ? example.futurePathways.join(', ') : '',
+  }
+
+  const stories = example.stories.map((story) => ({
+    ...story,
+    image: String(story.media || '').toLowerCase().includes('photo') ? story.media : '',
+    audio: String(story.media || '').toLowerCase().includes('audio') ? story.media : '',
+    video: String(story.media || '').toLowerCase().includes('video') ? story.media : '',
+  }))
+
+  return buildPathWeaveOutput(profile, stories, createDefaultShareConfig(stories, true))
 }
 
 function WeaveBands({ className = '' }) {
@@ -121,16 +181,109 @@ function WeaveBands({ className = '' }) {
 function ThreadMarker({ index, active, completed }) {
   return (
     <div
-      className={`relative flex h-10 w-10 items-center justify-center rounded-full text-xs font-medium transition ${
+      className={`relative flex items-center justify-center text-xs font-medium transition-all duration-500 ${
         active
-          ? 'bg-stone-900 text-white shadow-[0_14px_30px_-18px_rgba(28,25,23,0.9)]'
+          ? 'thread-blob h-11 w-11 text-stone-900'
           : completed
-            ? 'bg-teal-100 text-teal-900 ring-1 ring-teal-200'
-            : 'bg-white text-stone-500 ring-1 ring-stone-200'
+            ? 'h-3 w-3 rounded-full bg-[rgba(169,143,97,0.7)] text-transparent'
+            : 'h-2.5 w-2.5 rounded-full bg-stone-300/85 text-transparent'
       }`}
     >
-      {index + 1}
+      {active ? index + 1 : null}
     </div>
+  )
+}
+
+function BuilderWeaveBackdrop({ progress = 0, pulse = 0 }) {
+  const scale = 1 + progress * 0.02
+  const shift = progress * 18
+
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-br from-[#F9F7F2] via-[#F6F2EA] to-[#ECE9E1]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(201,151,69,0.12),_transparent_30%),radial-gradient(circle_at_bottom_right,_rgba(129,148,134,0.12),_transparent_28%)]" />
+      <div
+        className={`weave-pattern-overlay absolute inset-[-8%] ${pulse ? 'weave-pattern-pulse' : ''}`}
+        key={`${progress}-${pulse}`}
+        style={{
+          opacity: 0.05,
+          transform: `translate3d(${shift}px, ${-shift * 0.4}px, 0) scale(${scale})`,
+        }}
+      >
+        <svg className="h-full w-full" preserveAspectRatio="none" viewBox="0 0 1200 900">
+          <defs>
+            <pattern id="builder-weave-pattern" width="180" height="120" patternUnits="userSpaceOnUse">
+              <path d="M12 34 C46 10, 84 10, 120 34 S196 58, 230 34" fill="none" stroke="rgba(95,76,52,0.9)" strokeWidth="1" />
+              <path d="M-18 86 C24 60, 64 60, 106 86 S188 112, 232 86" fill="none" stroke="rgba(95,76,52,0.8)" strokeWidth="0.9" />
+              <circle cx="120" cy="34" r="2.4" fill="rgba(201,151,69,0.92)" />
+              <circle cx="106" cy="86" r="1.8" fill="rgba(129,148,134,0.88)" />
+            </pattern>
+          </defs>
+          <rect fill="url(#builder-weave-pattern)" height="100%" width="100%" />
+        </svg>
+      </div>
+      <div className="absolute left-[6%] top-[14%] h-32 w-[28%] rotate-[6deg] rounded-full bg-white/50 blur-3xl" />
+      <div className="absolute right-[8%] top-[24%] h-28 w-[24%] -rotate-[8deg] rounded-full bg-[#efe6d6]/80 blur-3xl" />
+      <div className="absolute bottom-[12%] left-[18%] h-24 w-[22%] rotate-[12deg] rounded-full bg-[#f3e7cf]/70 blur-3xl" />
+    </div>
+  )
+}
+
+function GoldenThreadStepper({ currentStep, onSelectStep }) {
+  return (
+    <div className="relative pt-6">
+      <div className="pointer-events-none absolute left-[20px] right-[20px] top-[27px] h-px bg-[linear-gradient(90deg,rgba(161,138,98,0.18),rgba(161,138,98,0.7),rgba(161,138,98,0.18))]" />
+      <div
+        className="pointer-events-none absolute left-[20px] top-[27px] h-px bg-[linear-gradient(90deg,rgba(201,151,69,0.8),rgba(160,132,88,0.9))] transition-all duration-700"
+        style={{ width: `calc(${(currentStep / (wizardSteps.length - 1 || 1)) * 100}% - 0px)` }}
+      />
+      <div className="grid gap-4 md:grid-cols-6">
+        {wizardSteps.map((item, index) => {
+          const isActive = index === currentStep
+          const isComplete = index < currentStep
+
+          return (
+            <button
+              key={item.id}
+              className="group relative flex min-w-0 flex-col items-start text-left"
+              onClick={() => onSelectStep(index)}
+              type="button"
+            >
+              <div className="flex h-10 items-center">
+                <ThreadMarker active={isActive} completed={isComplete} index={index} />
+              </div>
+              <div className="mt-5 min-w-0">
+                <p className="text-[10px] uppercase tracking-[0.36em] text-stone-400">0{index + 1}</p>
+                <p
+                  className={`mt-2 font-serif text-base tracking-tight transition-colors ${
+                    isActive ? 'text-zinc-800' : isComplete ? 'text-stone-700' : 'text-stone-500'
+                  }`}
+                >
+                  {item.label}
+                </p>
+                <p className="mt-1 max-w-[15ch] text-xs leading-5 text-stone-500/90">{item.phase}</p>
+              </div>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function WeaveTag({ children, active = false, onClick, className = '', type = 'button' }) {
+  return (
+    <button
+      aria-pressed={active}
+      className={`group inline-flex items-center gap-2 border-b border-[rgba(95,76,52,0.18)] px-0 py-2 text-sm text-stone-600 transition-all duration-300 hover:-translate-y-[2px] hover:border-[rgba(95,76,52,0.48)] hover:text-stone-900 ${
+        active ? 'border-[rgba(95,76,52,0.6)] text-stone-900' : ''
+      } ${className}`}
+      onClick={onClick}
+      type={type}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-[rgba(201,151,69,0.72)] transition-transform duration-300 group-hover:scale-125" />
+      <span>{children}</span>
+    </button>
   )
 }
 
@@ -409,7 +562,7 @@ function AppShell({ children, onStart, onNavigate, consentAccepted }) {
   const isHome = location.pathname === '/'
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(251,191,36,0.18),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(13,148,136,0.14),_transparent_24%),linear-gradient(180deg,_#f8f3eb_0%,_#fcfaf6_48%,_#f1ebe0_100%)] text-stone-800">
+    <div className="min-h-screen bg-gradient-to-br from-[#F9F7F2] via-[#F6F2EA] to-[#ECE9E1] text-stone-800">
       <div
         className={`mx-auto max-w-7xl px-4 pt-6 sm:px-6 lg:px-8 ${
           isHome ? 'relative h-screen overflow-hidden' : 'flex min-h-screen flex-col pb-12'
@@ -468,7 +621,7 @@ function LandingPage({ onStart, onSeeExample, onGoAbout, profile, stories }) {
     <div className="h-full overflow-y-scroll scroll-smooth scrollbar-hide snap-y snap-mandatory" data-home-scroll="true">
       <HomeSnapSection contentClassName="items-center">
         <div className="grid w-full gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
-          <div className="max-w-2xl self-center">
+          <div className="-mt-10 max-w-2xl self-center lg:-mt-16">
           <p className="text-xs uppercase tracking-[0.34em] text-stone-500">Narrative Sovereignty</p>
           <h1 className="mt-6 font-display text-6xl leading-[0.96] text-stone-900 md:text-7xl xl:text-[5.5rem]">
             PathWeave
@@ -498,7 +651,7 @@ function LandingPage({ onStart, onSeeExample, onGoAbout, profile, stories }) {
           </div>
           </div>
 
-          <div className="relative self-center">
+          <div className="relative -mt-8 self-center lg:-mt-14">
             <WeaveVisual stories={stories} />
           </div>
         </div>
@@ -523,82 +676,6 @@ function LandingPage({ onStart, onSeeExample, onGoAbout, profile, stories }) {
             description="The process stays simple and guided, so the experience feels calm and lightweight from the beginning."
           />
           <ContinuousTrajectorySection />
-        </div>
-      </HomeSnapSection>
-
-      <HomeSnapSection>
-        <div className="grid w-full gap-6">
-          <SectionHeading
-            eyebrow="Example Preview"
-            title="What your PathWeave can look like"
-            description="This is an example. Your PathWeave can look different."
-          />
-          <div className="rounded-[40px] border border-stone-200/80 bg-white/80 p-6 shadow-soft sm:p-8">
-          <div className="grid gap-8 lg:grid-cols-[1fr_0.9fr]">
-            <div>
-              <p className="font-display text-4xl text-stone-900">{profile.name}</p>
-              <p className="mt-4 max-w-2xl text-base leading-8 text-stone-600">{profile.narrativeIntro}</p>
-              <div className="mt-6 flex flex-wrap gap-2">
-                {exampleTags.map((tag) => (
-                  <Badge key={tag} tone="soft">
-                    {tag}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-            <div className="rounded-[28px] bg-stone-50 p-6 ring-1 ring-stone-200">
-              <p className="text-sm uppercase tracking-[0.22em] text-stone-400">Portfolio structure</p>
-              <div className="mt-4 grid gap-3">
-                <div className="rounded-[22px] bg-white px-4 py-4 ring-1 ring-stone-200">
-                  <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Community</p>
-                  <p className="mt-2 text-sm leading-7 text-stone-600">
-                    {profile.communityContribution ||
-                      'Community contribution can hold care, responsibility, collaboration, and support.'}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-white px-4 py-4 ring-1 ring-stone-200">
-                  <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Pathways</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {splitValue(profile.futurePathways || '').map((item) => (
-                      <Badge key={item} tone="accent">
-                        {item}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="min-h-[110px] rounded-[22px] bg-[linear-gradient(150deg,_rgba(251,243,227,0.9),_rgba(255,255,255,0.72))] ring-1 ring-stone-200" />
-                  <div className="min-h-[110px] rounded-[22px] bg-[linear-gradient(150deg,_rgba(220,242,239,0.72),_rgba(255,255,255,0.7))] ring-1 ring-stone-200" />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-8 grid gap-5 lg:grid-cols-2">
-            {exampleStories.map((story) => (
-              <article
-                key={story.id}
-                className="rounded-[30px] bg-stone-50 p-6 ring-1 ring-stone-200 transition hover:-translate-y-1 hover:bg-white"
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <h3 className="font-display text-2xl text-stone-900">{story.title}</h3>
-                  <span className="text-xs uppercase tracking-[0.22em] text-stone-400">{story.location}</span>
-                </div>
-                <p className="mt-4 text-sm leading-7 text-stone-600">{story.narrative}</p>
-              </article>
-            ))}
-          </div>
-
-          <div className="mt-8">
-            <button
-              className="rounded-full border border-stone-300 bg-white px-6 py-3 text-sm font-medium text-stone-700 transition hover:-translate-y-0.5 hover:border-stone-400 hover:bg-stone-50"
-              onClick={onSeeExample}
-              type="button"
-            >
-              View example
-            </button>
-          </div>
-          </div>
         </div>
       </HomeSnapSection>
 
@@ -696,194 +773,301 @@ function EntrySafetyModal({ open, onClose, onLearnMore }) {
 
 function AboutPage({ onStart, onBack, onGoHome, onGoExample }) {
   return (
-    <div className="space-y-24 pb-6">
-      <section className="rounded-[40px] border border-white/70 bg-white/55 px-6 py-10 shadow-soft backdrop-blur sm:px-8 sm:py-12 lg:px-12">
-        <div className="max-w-4xl">
-          <p className="text-sm uppercase tracking-[0.32em] text-stone-500">Our approach</p>
-          <h1 className="mt-4 font-display text-5xl leading-tight text-stone-900 md:text-6xl">About PathWeave</h1>
-          <p className="mt-6 text-xl leading-8 text-stone-700">
-            PathWeave is a storytelling and portfolio concept designed to support more respectful, narrative-based ways
-            of sharing experience, contribution, and future pathways.
-          </p>
-          <p className="mt-6 max-w-2xl text-base leading-8 text-stone-600">
-            It explores alternatives to standard resume formats by creating space for story, connection, multimodal
-            expression, and user-controlled sharing.
-          </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <button className="rounded-full border border-stone-300 px-5 py-3 text-sm text-stone-700" onClick={onBack} type="button">
-              Back
-            </button>
-            <button className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white" onClick={onStart} type="button">
-              Start your PathWeave
-            </button>
-          </div>
-        </div>
-      </section>
+    <div className="relative isolate overflow-hidden px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
+      <AboutHeroBackdrop />
+      <div className="relative mx-auto max-w-6xl pb-12">
+        <AboutRevealSection className="min-h-[62vh] flex items-start">
+          <div className="w-full">
+            <div className="grid items-start gap-12 py-10 sm:py-12 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] lg:gap-16">
+              <div className="max-w-2xl">
+                <h1 className="font-display text-4xl leading-tight text-stone-900 md:text-5xl">
+                  A different way of being seen.
+                </h1>
+                <p className="mt-6 max-w-2xl text-xl leading-8 text-stone-800 md:text-2xl">
+                  PathWeave is not another resume builder. It is a narrative canvas. For context, for community, for
+                  choice.
+                </p>
+                <p className="mt-6 max-w-xl text-base leading-8 text-stone-500">
+                  Express your voice, before it is reduced to keywords. Begin your story, gently.
+                </p>
+                <div className="mt-12 flex flex-wrap gap-4 text-sm text-stone-700">
+                  <button
+                    className="rounded-full border border-[rgba(95,76,52,0.22)] bg-white/58 px-5 py-2.5 backdrop-blur-sm transition hover:-translate-y-0.5 hover:bg-white/72 hover:text-stone-900"
+                    onClick={onBack}
+                    type="button"
+                  >
+                    Back
+                  </button>
+                  <button
+                    className="precision-panel-quiet rounded-full border border-[rgba(95,76,52,0.16)] bg-[#f6f1e7]/86 px-5 py-2.5 text-stone-800 transition hover:-translate-y-0.5 hover:bg-white/90"
+                    onClick={onStart}
+                    type="button"
+                  >
+                    Start your PathWeave
+                  </button>
+                </div>
+              </div>
 
-      <EditorialSplit
-        eyebrow="Why PathWeave Was Created"
-        title="Why PathWeave was created"
-        body={
-          <>
-            <p>
-              Standard resume systems often prioritise titles, timelines, and individual achievement. They can leave
-              little room for story, context, relationships, care, contribution, and future direction.
-            </p>
-            <p className="mt-5">
-              PathWeave explores a different approach. It asks what happens when digital self-representation is shaped
-              less like a checklist and more like a portfolio of stories, media, connections, and pathways.
-            </p>
-          </>
-        }
-        visual={<ComparisonPanel />}
-      />
-
-      <section className="space-y-10">
-        <div className="max-w-5xl">
-          <SectionHeading
-            className="max-w-5xl"
-            descriptionClassName="lg:whitespace-nowrap"
-            eyebrow="What We Stand For"
-            title="What we stand for"
-            description="These principles shape the way PathWeave approaches storytelling, representation, and sharing."
-          />
-        </div>
-        <div className="rounded-[38px] bg-[linear-gradient(155deg,_rgba(251,243,227,0.94),_rgba(255,255,255,0.82)),radial-gradient(circle_at_top_right,_rgba(20,184,166,0.12),_transparent_28%),radial-gradient(circle_at_bottom_left,_rgba(245,158,11,0.18),_transparent_34%)] p-6 shadow-soft ring-1 ring-stone-200 sm:p-8">
-          <div className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
-            <div className="rounded-[30px] border border-white/80 bg-white/55 p-6 sm:p-8">
-              <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Shared direction</p>
-              <h3 className="mt-4 font-display text-3xl leading-tight text-stone-900">
-                Story, relationship, care, and choice remain visible together.
-              </h3>
-              <p className="mt-5 max-w-xl text-base leading-8 text-stone-600">
-                PathWeave does not treat experience as a list to optimise. It creates space for narrative, connection,
-                and careful sharing so that representation can stay more human and contextual.
-              </p>
-              <div className="mt-6 flex flex-wrap gap-3">
-                <Badge tone="accent">Narrative-led</Badge>
-                <Badge tone="soft">Community-aware</Badge>
-                <Badge>User control</Badge>
+              <div className="relative -ml-8 -mt-24 hidden lg:block">
+                <div className="absolute inset-0 translate-x-5 translate-y-6 rounded-[40px] bg-white/18 blur-2xl" />
+                <div className="relative overflow-hidden rounded-[40px] border border-white/35 bg-white/20 backdrop-blur-sm">
+                  <img
+                    alt="Hands connected by a red thread"
+                    className="h-[34rem] w-full object-cover"
+                    src="https://images.unsplash.com/photo-1529672425113-d3035c7f4837?q=80&w=1740&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
+                  />
+                  <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(249,247,242,0.04),rgba(39,39,42,0.16))]" />
+                </div>
               </div>
             </div>
-            <div className="grid gap-5 md:grid-cols-2">
-              <AboutValueCard
-                title="Story"
-                text="We believe experience can be shared through narrative, reflection, and lived context, not only through job titles and bullet points."
-              />
-              <AboutValueCard
-                title="Community"
-                text="We recognise that contribution often happens through connection, care, responsibility, and relationships with others."
-              />
-              <AboutValueCard
-                title="Control"
-                text="Users should decide what to share, what to keep private, and how their stories are represented."
-              />
-              <AboutValueCard
-                title="Respect"
-                text="Digital systems should make space for different ways of expression, rather than forcing everyone into one standard format."
-              />
+          </div>
+        </AboutRevealSection>
+
+        <AboutRevealSection className="py-24 sm:py-32">
+          <div className="mx-auto max-w-3xl">
+            <p className="text-xs uppercase tracking-[0.38em] text-stone-500">The contrast</p>
+            <h2 className="mt-5 font-serif text-4xl tracking-tight text-zinc-800 sm:text-5xl">Why it needed another shape</h2>
+            <p className="mt-6 text-base leading-loose text-stone-600">
+              Traditional CV systems tend to ask for a person in a linear, compressed form. PathWeave asks what happens
+              when representation begins with relation, context, and possibility instead.
+            </p>
+          </div>
+          <div className="mx-auto mt-14 grid max-w-5xl gap-4 lg:grid-cols-2">
+            <AboutContrastCard
+              eyebrow="Traditional CV logic"
+              title="Linear"
+              text="Timeline first. Achievement separated from context."
+            />
+            <AboutContrastCard
+              eyebrow="Traditional CV logic"
+              title="Individualistic"
+              text="Contribution framed as personal output, ready for quick comparison."
+            />
+            <AboutContrastCard
+              eyebrow="PathWeave logic"
+              title="Relational"
+              text="People, place, and shared context remain visible inside the story."
+            />
+            <AboutContrastCard
+              eyebrow="PathWeave logic"
+              title="Future-oriented"
+              text="Pathways stay open, reflective, and human rather than fixed into a single summary."
+            />
+          </div>
+        </AboutRevealSection>
+
+        <AboutRevealSection className="py-24 sm:py-32">
+          <div className="mx-auto max-w-3xl">
+            <p className="text-xs uppercase tracking-[0.38em] text-stone-500">The core trinity</p>
+            <h2 className="mt-5 font-serif text-4xl tracking-tight text-zinc-800 sm:text-5xl">Story, relationship, choice</h2>
+          </div>
+          <div className="mt-14 grid gap-10 lg:grid-cols-3">
+            <AboutManifestoBlock
+              icon={<AboutLineIcon variant="story" />}
+              title="Story"
+              text="Experience can begin in a person’s own voice, with narrative and reflection carrying meaning before any translation layer appears."
+            />
+            <AboutManifestoBlock
+              icon={<AboutLineIcon variant="relationship" />}
+              title="Relationship"
+              text="Contribution is often woven through people, community, and place. PathWeave keeps those connections visible instead of stripping them away."
+            />
+            <AboutManifestoBlock
+              icon={<AboutLineIcon variant="choice" />}
+              title="Choice"
+              text="Users decide what to include, what to keep quiet, and how their story should be shared. Silence is also a valid form of authorship."
+            />
+          </div>
+        </AboutRevealSection>
+
+        <AboutRevealSection className="py-24 sm:py-32">
+          <div className="mx-auto max-w-3xl text-center">
+            <p className="text-xs uppercase tracking-[0.38em] text-stone-500">The ethics</p>
+            <h2 className="mt-5 font-serif text-4xl tracking-tight text-zinc-800 sm:text-5xl">Silence is a choice.</h2>
+            <p className="mt-7 text-base leading-loose text-stone-600">
+              Some stories, media, and forms of knowledge are personal, sensitive, or community-held. PathWeave is
+              designed around protection before visibility.
+            </p>
+          </div>
+          <div className="mx-auto mt-14 grid max-w-4xl gap-10 lg:grid-cols-[1fr_0.9fr] lg:items-center">
+            <div className="space-y-6">
+              <p className="text-base leading-loose text-stone-600">
+                Review happens before export. Media is optional. Tags are secondary. Original narrative meaning stays
+                primary.
+              </p>
+              <div className="space-y-4">
+                {[
+                  'Not everything meaningful needs to become public.',
+                  'A person can choose privacy without losing dignity.',
+                  'Careful sharing is part of the design, not an afterthought.',
+                ].map((item) => (
+                  <div key={item} className="rounded-[28px] bg-white/22 px-5 py-4 text-sm leading-loose text-stone-700 backdrop-blur-sm">
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-[34px] bg-[radial-gradient(circle_at_top,#ffffffa8,transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.3),rgba(255,255,255,0.12))] p-6 backdrop-blur-md">
+              <div className="rounded-[30px] bg-white/26 p-6">
+                <p className="text-[11px] uppercase tracking-[0.32em] text-stone-400">Protective logic</p>
+                <div className="mt-6 flex justify-center">
+                  <svg aria-hidden="true" className="h-36 w-36 text-[rgba(95,76,52,0.4)]" fill="none" viewBox="0 0 144 144">
+                    <path d="M72 18 C92 30, 105 34, 118 36 V72 C118 98, 99 119, 72 126 C45 119, 26 98, 26 72 V36 C39 34, 52 30, 72 18Z" stroke="currentColor" strokeWidth="1.2" />
+                    <path d="M48 72 C55 60, 64 54, 72 54 C80 54, 89 60, 96 72" stroke="currentColor" strokeLinecap="round" strokeWidth="1.1" />
+                    <path d="M60 84 C63 88, 67 90, 72 90 C77 90, 81 88, 84 84" stroke="currentColor" strokeLinecap="round" strokeWidth="1.1" />
+                    <circle cx="72" cy="54" fill="currentColor" r="2.5" />
+                  </svg>
+                </div>
+                <p className="mt-6 text-center text-sm leading-loose text-stone-600">
+                  The page does not assume disclosure. It makes room for pause, withholding, and user-led boundaries.
+                </p>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </AboutRevealSection>
 
-      <section
-        className="grid gap-8 rounded-[40px] border border-stone-200/80 bg-[#f2ede4] p-8 shadow-soft lg:grid-cols-[1fr_0.95fr]"
-        id="respecting-story"
-      >
-        <div>
-          <SectionHeading
-            eyebrow="Respecting Story And Cultural Context"
-            title="Respecting story and cultural context"
-            description="PathWeave is designed to support careful and thoughtful sharing."
-          />
-          <div className="mt-6 space-y-5 text-base leading-8 text-stone-600">
-            <p>
-              Some stories, media, and forms of knowledge may be personal, sensitive, or community-held. Not
-              everything meaningful should automatically become public, downloadable, or translated into standardised
-              language.
+        <AboutRevealSection className="pb-10 pt-24 sm:pt-32">
+          <div className="mx-auto max-w-3xl border-t border-[rgba(95,76,52,0.12)] pt-10">
+            <p className="text-xs uppercase tracking-[0.38em] text-stone-500">The context</p>
+            <h2 className="mt-5 font-serif text-3xl tracking-tight text-zinc-800">Research-informed, quietly provisional.</h2>
+            <p className="mt-6 text-base leading-loose text-stone-600">
+              PathWeave is an academic prototype informed by research into narrative expression, respectful digital
+              design, and culturally responsive alternatives to resume-style systems. It is not a universal standard,
+              and it does not claim to speak for every community or protocol.
             </p>
-            <p>PathWeave is designed so that:</p>
+            <div className="mt-10 flex flex-wrap gap-4 text-sm text-stone-600">
+              <button
+                className="rounded-full border border-[rgba(95,76,52,0.22)] bg-white/58 px-5 py-2.5 backdrop-blur-sm transition hover:-translate-y-0.5 hover:bg-white/72 hover:text-stone-900"
+                onClick={onGoHome}
+                type="button"
+              >
+                Home
+              </button>
+              <button
+                className="rounded-full border border-[rgba(95,76,52,0.22)] bg-white/58 px-5 py-2.5 backdrop-blur-sm transition hover:-translate-y-0.5 hover:bg-white/72 hover:text-stone-900"
+                onClick={onGoExample}
+                type="button"
+              >
+                Example
+              </button>
+            </div>
           </div>
-          <ul className="mt-6 space-y-3 text-sm text-stone-700">
-            {[
-              'users remain in control of what they include',
-              'stories can remain private',
-              'media is not automatically shared',
-              'translation into employer-readable tags is optional',
-              'original narrative meaning stays primary',
-            ].map((item) => (
-              <li key={item} className="flex gap-3">
-                <span className="mt-1.5 h-2.5 w-2.5 rounded-full bg-amber-500" />
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-
-          <div className="mt-8 rounded-[28px] bg-white/75 p-6 ring-1 ring-stone-200">
-            <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Sharing and privacy</p>
-            <p className="mt-4 text-base leading-8 text-stone-600">
-              Every story, image, audio clip, and video can be reviewed before it is shown or exported. PathWeave is
-              designed around user choice rather than automatic disclosure.
-            </p>
-          </div>
-        </div>
-        <PrivacyMockup />
-      </section>
-
-      <EditorialSplit
-        eyebrow="Research And Design Context"
-        title="Research and design context"
-        body={
-          <>
-            <p>
-              PathWeave is an academic concept prototype exploring more culturally responsive alternatives to
-              traditional resume-based systems.
-            </p>
-            <p className="mt-5">
-              Its design is informed by research on narrative expression, multimodal storytelling, user-controlled
-              sharing, community-aware representation, and respectful digital design.
-            </p>
-            <p className="mt-5">
-              It does not claim to represent all communities or protocols. Instead, it offers a reflective design
-              direction for thinking differently about how stories, contribution, and future pathways might be shared
-              online.
-            </p>
-          </>
-        }
-        reverse
-        visual={
-          <div className="rounded-[34px] border border-stone-200/80 bg-white/85 p-7 shadow-soft">
-            <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Design principles</p>
-            <ul className="mt-6 space-y-4">
-              {[
-                'story before format',
-                'user control',
-                'multimodal expression',
-                'community-aware representation',
-                'optional translation layer',
-              ].map((item) => (
-                <li key={item} className="rounded-[22px] bg-stone-50 px-4 py-4 text-sm text-stone-700 ring-1 ring-stone-200">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </div>
-        }
-      />
-
-      <footer className="border-t border-stone-200/70 pt-8">
-        <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-          <div className="flex flex-wrap gap-3">
-            <FooterLink label="Home" onClick={onGoHome} />
-            <FooterLink label="About" onClick={onBack} />
-            <FooterLink label="Example" onClick={onGoExample} />
-            <FooterLink label="Contact" />
-          </div>
-          <p className="text-sm text-stone-500">PathWeave is a concept prototype for narrative portfolio design.</p>
-        </div>
-      </footer>
+        </AboutRevealSection>
+      </div>
     </div>
+  )
+}
+
+function AboutRevealSection({ children, className = '' }) {
+  const sectionRef = useRef(null)
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    if (!sectionRef.current || typeof window === 'undefined') {
+      return undefined
+    }
+
+    const observer = new window.IntersectionObserver(
+      ([entry]) => {
+        setVisible(entry.isIntersecting)
+      },
+      { threshold: 0.18, rootMargin: '0px 0px -8% 0px' },
+    )
+
+    observer.observe(sectionRef.current)
+
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <section ref={sectionRef} className={`${className}`}>
+      <div className={`fade-in-up ${visible ? 'is-visible' : ''}`}>{children}</div>
+    </section>
+  )
+}
+
+function AboutHeroBackdrop() {
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-br from-[#F9F7F2] via-[#F6F2EA] to-[#ECE9E1]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(201,151,69,0.08),_transparent_24%),radial-gradient(circle_at_bottom_right,_rgba(129,148,134,0.08),_transparent_26%)]" />
+      <div className="absolute inset-[-8%] opacity-[0.05]">
+        <svg className="h-full w-full" preserveAspectRatio="none" viewBox="0 0 1600 1200">
+          <g fill="none" stroke="rgba(95,76,52,0.95)" strokeLinecap="round">
+            <path d="M-80 180 C140 110, 260 250, 470 198 S860 92, 1070 184 S1460 264, 1700 176" strokeWidth="0.75" />
+            <path d="M-60 300 C180 214, 320 366, 548 292 S968 180, 1170 284 S1468 370, 1680 286" strokeWidth="0.65" />
+            <path d="M-120 446 C108 360, 284 520, 520 450 S930 320, 1140 430 S1450 532, 1700 440" strokeWidth="0.8" />
+            <path d="M-80 590 C140 520, 322 676, 548 610 S946 492, 1172 598 S1480 688, 1700 602" strokeWidth="0.7" />
+            <path d="M-110 756 C108 666, 308 838, 560 762 S964 644, 1182 748 S1466 844, 1700 760" strokeWidth="0.75" />
+            <path d="M-70 906 C168 820, 336 970, 584 910 S980 806, 1200 900 S1508 984, 1700 908" strokeWidth="0.65" />
+            <path d="M250 -60 C188 142, 370 254, 324 456 S220 818, 320 1260" strokeWidth="0.55" />
+            <path d="M640 -90 C590 134, 760 248, 714 470 S604 844, 698 1260" strokeWidth="0.58" />
+            <path d="M1030 -80 C984 126, 1148 256, 1110 468 S1018 850, 1098 1260" strokeWidth="0.52" />
+            <path d="M1360 -70 C1300 140, 1460 266, 1420 492 S1324 874, 1380 1260" strokeWidth="0.56" />
+          </g>
+        </svg>
+      </div>
+      <div className="absolute left-[10%] top-[16%] h-40 w-[30%] rotate-[8deg] rounded-full bg-white/35 blur-3xl" />
+      <div className="absolute right-[8%] top-[26%] h-36 w-[24%] -rotate-[12deg] rounded-full bg-[#efe7d8]/70 blur-3xl" />
+      <div className="absolute bottom-[16%] left-[18%] h-28 w-[20%] rotate-[10deg] rounded-full bg-[#f4ead5]/70 blur-3xl" />
+    </div>
+  )
+}
+
+function AboutContrastCard({ eyebrow, title, text }) {
+  return (
+    <article className="group rounded-[30px] border border-white/35 bg-white/18 p-6 backdrop-blur-sm transition duration-300 hover:bg-white/34">
+      <p className="text-[11px] uppercase tracking-[0.34em] text-stone-400 transition-colors duration-300 group-hover:text-stone-500">
+        {eyebrow}
+      </p>
+      <h3 className="mt-4 font-serif text-4xl tracking-tight text-zinc-700 transition-colors duration-300 group-hover:text-zinc-900">
+        {title}
+      </h3>
+      <p className="mt-4 text-base leading-loose text-stone-600 transition-colors duration-300 group-hover:text-stone-800">
+        {text}
+      </p>
+    </article>
+  )
+}
+
+function AboutLineIcon({ variant }) {
+  if (variant === 'story') {
+    return (
+      <svg aria-hidden="true" className="h-14 w-14 text-current" fill="none" viewBox="0 0 56 56">
+        <path d="M14 16.5h17.5c6 0 10.5 4.5 10.5 10.5v13H24.5C18.5 40 14 35.5 14 29.5v-13Z" stroke="currentColor" strokeWidth="1" />
+        <path d="M20 24h15M20 29h12M20 34h15" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+      </svg>
+    )
+  }
+
+  if (variant === 'relationship') {
+    return (
+      <svg aria-hidden="true" className="h-14 w-14 text-current" fill="none" viewBox="0 0 56 56">
+        <circle cx="17" cy="18" r="4.5" stroke="currentColor" strokeWidth="1" />
+        <circle cx="39" cy="18" r="4.5" stroke="currentColor" strokeWidth="1" />
+        <circle cx="28" cy="36" r="5.5" stroke="currentColor" strokeWidth="1" />
+        <path d="M21 20.5 35 20.5M20 22.5 25 31M36 22.5 31 31" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+      </svg>
+    )
+  }
+
+  return (
+    <svg aria-hidden="true" className="h-14 w-14 text-current" fill="none" viewBox="0 0 56 56">
+      <path d="M28 12 C36 18, 42 20, 46 21 V31 C46 40, 38.5 46.5, 28 49 C17.5 46.5, 10 40, 10 31 V21 C14 20, 20 18, 28 12Z" stroke="currentColor" strokeWidth="1" />
+      <path d="M22 28 C24 24.5, 26 23, 28 23 C30 23, 32 24.5, 34 28" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+      <path d="M24.5 33.5 C25.8 35.1, 26.9 35.8, 28 35.8 C29.1 35.8, 30.2 35.1, 31.5 33.5" stroke="currentColor" strokeLinecap="round" strokeWidth="1" />
+    </svg>
+  )
+}
+
+function AboutManifestoBlock({ icon, title, text }) {
+  return (
+    <article className="group max-w-3xl rounded-[30px] border border-white/28 bg-white/10 p-6 transition duration-300 hover:bg-white/22">
+      <div className="transition duration-300 group-hover:text-[rgba(95,76,52,0.82)]">{icon}</div>
+      <p className="mt-8 text-[11px] uppercase tracking-[0.34em] text-stone-400">Core thread</p>
+      <h3 className="mt-4 font-serif text-4xl tracking-tight text-zinc-800">{title}</h3>
+      <p className="mt-6 text-base leading-loose text-stone-600">{text}</p>
+    </article>
   )
 }
 
@@ -1659,251 +1843,323 @@ function StepCard({ index, title, text }) {
   )
 }
 
-function ExampleProfilePage({ example, onBack, onStart }) {
-  const mediaCards = example.gallery || []
-  const contributionCards = example.contributionCards || []
+function ExampleOutputFrame({ eyebrow, title, description, children, actions = null, tone = 'light' }) {
+  const tones = {
+    light: 'border-white/35 bg-white/18 backdrop-blur-md',
+    dark: 'border-white/10 bg-[linear-gradient(180deg,_rgba(24,24,24,0.94),_rgba(40,34,30,0.94))] text-white backdrop-blur-md',
+  }
 
   return (
-    <div className="space-y-12">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+    <section className={`rounded-[36px] border ${tones[tone]}`}>
+      <div className={`flex flex-wrap items-start justify-between gap-4 px-6 py-6 sm:px-8 ${tone === 'dark' ? 'border-b border-white/10' : 'border-b border-[rgba(95,76,52,0.08)]'}`}>
         <div className="max-w-2xl">
-          <p className="text-sm uppercase tracking-[0.32em] text-stone-500">Example profile</p>
-          <h1 className="mt-3 font-display text-4xl text-stone-900 md:text-5xl">
-            This is an example PathWeave. Your version can look different.
-          </h1>
+          <p className={`text-xs uppercase tracking-[0.3em] ${tone === 'dark' ? 'text-white/45' : 'text-stone-400'}`}>{eyebrow}</p>
+          <h2 className={`mt-3 font-serif text-4xl tracking-tight ${tone === 'dark' ? 'text-white' : 'text-zinc-800'}`}>{title}</h2>
+          <p className={`mt-4 text-base leading-loose ${tone === 'dark' ? 'text-white/72' : 'text-stone-600'}`}>{description}</p>
         </div>
-        <div className="flex gap-3">
-          <button className="rounded-full border border-stone-300 px-5 py-3 text-sm" onClick={onBack} type="button">
-            Back
-          </button>
-          <button className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white" onClick={onStart} type="button">
-            Start your own
-          </button>
+        {actions}
+      </div>
+      <div className="px-4 pb-4 pt-4 sm:px-6 sm:pb-6">{children}</div>
+    </section>
+  )
+}
+
+function ExampleOutputThumbnail({ variant, output }) {
+  if (variant === 'summary') {
+    const storyLines = output.stories.slice(0, 3)
+
+    return (
+      <div className="relative aspect-[210/297] w-full overflow-hidden bg-[#FCFAF8] shadow-[0_24px_60px_-30px_rgba(26,26,26,0.34)]">
+        <div className="flex h-full flex-col p-[10%] text-[#222222]">
+          <div className="mb-[9%] flex items-start justify-between">
+            <div>
+              <h3 className="font-['Lora'] text-[2.1rem] font-semibold tracking-[-0.05em] text-[#222222]">{output.name}</h3>
+              <p className="mt-1 text-[0.52rem] italic text-[#888888]">Created under the PathWeave Respectful Storytelling Protocol.</p>
+            </div>
+            <div className="h-16 text-right text-[0.4rem] uppercase tracking-[0.22em] text-[#888888]" style={{ writingMode: 'vertical-rl' }}>
+              {output.placeConnection || 'Shared context'}
+            </div>
+          </div>
+
+          <div className="flex-1 space-y-[8%]">
+            {storyLines.map((story, index) => (
+              <div key={story.id || `${story.title}-${index}`} className="relative flex">
+                <div className="w-[24%] pr-[5%] text-right">
+                  <p className="text-[0.42rem] font-semibold uppercase tracking-[0.14em] text-[#222222]">
+                    {(story.location || 'Context').split(/[,/]/)[0]}
+                  </p>
+                  <p className="mt-1 text-[0.4rem] text-[#666666]">{story.involved?.[0] || 'PathWeave'}</p>
+                  <p className="mt-1 text-[0.36rem] text-[#999999]">Current profile</p>
+                </div>
+                <div className="relative mr-[5%] w-[2%]">
+                  <div className="absolute left-1/2 top-0 h-[130%] w-px -translate-x-1/2 bg-[#DDDDDD]" />
+                  <div className="absolute left-1/2 top-1 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-[#4A3728]" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-['Lora'] text-[0.7rem] font-bold text-[#222222]">{story.title}</p>
+                  <p className="mt-1 text-[0.43rem] leading-[1.55] text-[#444444]">
+                    {(story.summary || story.narrative || '').slice(0, 120)}
+                  </p>
+                  <div className="mt-1.5 inline-flex bg-[#F4F1EE] px-1.5 py-0.5 text-[0.34rem] text-[#777777]">
+                    [Connection]
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-[8%] border-t border-[#DDDDDD] pt-[6%]">
+            <p className="text-[0.44rem] font-semibold uppercase tracking-[0.28em] text-[#AAAAAA]">Pathways & Capabilities</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(output.pathwaysList.length ? output.pathwaysList : output.tags).slice(0, 7).map((item) => (
+                <span key={item} className="border border-[#EAE8E5] bg-[#F7F5F2] px-2 py-1 text-[0.4rem] text-[#444444]">
+                  {item}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
+    )
+  }
 
-      <section className="overflow-hidden rounded-[40px] border border-stone-200/80 bg-white/80 shadow-soft">
-        <div className="grid gap-0 lg:grid-cols-[1.02fr_0.98fr]">
-          <div className="p-8 sm:p-10">
-            <Badge tone="soft">Visual narrative portfolio</Badge>
-            <h2 className="mt-6 font-display text-5xl text-stone-900 md:text-6xl">{example.name}</h2>
-            <p className="mt-5 text-xl leading-8 text-stone-700">{example.identityLine}</p>
-            <p className="mt-4 max-w-xl text-base leading-8 text-stone-600">{example.placeConnection}</p>
-            <p className="mt-6 max-w-2xl text-base leading-8 text-stone-600">{example.narrativeIntro}</p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <button
-                className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 hover:bg-stone-800"
-                type="button"
-              >
-                {example.audioIntroLabel}
-              </button>
-              {example.values.map((value) => (
-                <Badge key={value}>{value}</Badge>
-              ))}
+  if (variant === 'structured') {
+    return (
+      <div className="relative aspect-[210/297] w-full overflow-hidden bg-[#121212] shadow-[0_24px_60px_-30px_rgba(0,0,0,0.46)]">
+        <div className="flex h-full flex-col p-[9%] text-white">
+          <p className="text-[0.46rem] uppercase tracking-[0.28em] text-white/45">Structured JSON</p>
+          <h3 className="mt-3 font-display text-[1.6rem] text-white">Portable narrative data</h3>
+          <div className="mt-6 space-y-3">
+            <div className="rounded-[10px] border border-white/10 bg-white/6 p-3 text-[0.46rem] text-white/72">
+              Same profile, different form.
+            </div>
+            <div className="rounded-[10px] border border-white/10 bg-white/6 p-3 text-[0.46rem] text-white/72">
+              Copyable, downloadable, portable.
             </div>
           </div>
-          <div className="relative min-h-[380px] bg-[linear-gradient(160deg,_rgba(251,243,227,0.92),_rgba(243,236,223,0.85)),radial-gradient(circle_at_top_right,_rgba(20,184,166,0.18),_transparent_30%),radial-gradient(circle_at_bottom_left,_rgba(245,158,11,0.22),_transparent_34%)] p-8 sm:p-10">
-            <div className="absolute inset-6 rounded-[32px] border border-white/70" />
-            <div className="relative flex h-full flex-col justify-between rounded-[34px] bg-white/40 p-6 backdrop-blur-sm">
-              <p className="text-sm uppercase tracking-[0.24em] text-stone-500">{example.heroMediaLabel}</p>
-              <div className="grid gap-4">
-                <div className="h-48 rounded-[28px] bg-[linear-gradient(135deg,_rgba(255,255,255,0.58),_rgba(255,255,255,0.12))] ring-1 ring-white/60" />
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="h-20 rounded-[22px] bg-white/55 ring-1 ring-white/60" />
-                  <div className="h-20 rounded-[22px] bg-white/35 ring-1 ring-white/60" />
-                  <div className="h-20 rounded-[22px] bg-white/55 ring-1 ring-white/60" />
-                </div>
-              </div>
-            </div>
+          <div className="mt-5 flex-1 overflow-hidden rounded-[14px] border border-white/10 bg-black/30 p-3 font-mono text-[0.43rem] leading-[1.55] text-white/84">
+            <p>{'{'}</p>
+            <p>&nbsp;&nbsp;"name": "{output.name}",</p>
+            <p>&nbsp;&nbsp;"stories": [</p>
+            <p>&nbsp;&nbsp;&nbsp;&nbsp;{'{'} "title": "{output.stories[0]?.title || 'Story'}" {'}'},</p>
+            <p>&nbsp;&nbsp;&nbsp;&nbsp;{'{'} "title": "{output.stories[1]?.title || 'Story'}" {'}'}</p>
+            <p>&nbsp;&nbsp;],</p>
+            <p>&nbsp;&nbsp;"community": "{(output.connections.summary || 'Shared community context').slice(0, 28)}...",</p>
+            <p>&nbsp;&nbsp;"pathways": [{(output.pathwaysList.slice(0, 3) || ['pathway']).map((item) => `"${item}"`).join(', ')}],</p>
+            <p>&nbsp;&nbsp;"tags": [{(output.tags.slice(0, 3) || ['optional']).map((item) => `"${item}"`).join(', ')}]</p>
+            <p>{'}'}</p>
           </div>
         </div>
-      </section>
+      </div>
+    )
+  }
 
-      <section className="grid gap-8 lg:grid-cols-[1.02fr_0.98fr]">
-        <div className="rounded-[36px] border border-stone-200/80 bg-white/80 p-8 shadow-soft">
-          <SectionHeading
-            eyebrow="My Story"
-            title="A narrative that stays whole"
-            description={example.storyParagraph}
-          />
-        </div>
-        <blockquote className="rounded-[36px] bg-stone-900 p-8 text-white shadow-soft">
-          <p className="font-display text-3xl leading-tight">“{example.supportingQuote}”</p>
-          <p className="mt-6 text-sm uppercase tracking-[0.24em] text-white/55">{example.name}</p>
-        </blockquote>
-      </section>
-
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="Featured Stories"
-          title="Large story sections with context and relationships"
-          description="Each story combines narrative, media, people, place, and optional tags in a portfolio-like layout."
-        />
-        <div className="space-y-8">
-          {example.stories.map((story, index) => (
-            <article
-              key={story.id}
-              className="grid gap-8 rounded-[40px] border border-stone-200/80 bg-white/80 p-6 shadow-soft lg:grid-cols-2 lg:p-8"
+  return (
+    <div className="relative aspect-[210/297] w-full overflow-hidden bg-[#F9F9F8] shadow-[0_24px_60px_-30px_rgba(26,26,26,0.34)]">
+      <div className="absolute inset-0 opacity-[0.12]">
+        <svg className="h-full w-full" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="exampleFullThumbWeave" width="70" height="70" patternUnits="userSpaceOnUse">
+              <circle cx="35" cy="35" r="1.1" fill="#1A1A1A" />
+              <path d="M0,35 Q17,20 35,35 T70,35 M35,0 Q20,17 35,35 T35,70" fill="none" opacity="0.32" stroke="#1A1A1A" strokeWidth="0.5" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#exampleFullThumbWeave)" />
+        </svg>
+      </div>
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_22%_20%,rgba(255,213,128,0.2),transparent_28%),radial-gradient(circle_at_70%_70%,rgba(102,204,204,0.14),transparent_32%)]" />
+      <div className="relative flex h-full flex-col px-[11%] py-[12%] text-center">
+        <h3 className="font-display text-[2rem] italic leading-[1.05] text-stone-900">{output.name}, woven with purpose.</h3>
+        <p className="mx-auto mt-5 max-w-[82%] font-['Playfair_Display'] text-[0.58rem] leading-[1.8] text-stone-600">
+          {(output.introSummary || output.intro || '').slice(0, 130)}
+        </p>
+        <div className="mt-7 grid gap-2">
+          {output.stories.slice(0, 3).map((story, index) => (
+            <div
+              key={story.id || `${story.title}-${index}`}
+              className={`rounded-[12px] border border-[#1A1A1A]/7 bg-white/72 p-3 text-left shadow-[0_10px_30px_-20px_rgba(26,26,26,0.2)] ${
+                index === 0 ? 'ml-0 mr-5' : index === 1 ? 'ml-5 mr-0' : 'mx-3'
+              }`}
             >
-              <div className={index % 2 === 1 ? 'lg:order-2' : ''}>
-                <div className="flex h-full min-h-[280px] flex-col justify-between rounded-[32px] bg-[linear-gradient(160deg,_rgba(251,243,227,0.9),_rgba(255,255,255,0.72)),radial-gradient(circle_at_top_right,_rgba(20,184,166,0.18),_transparent_32%),radial-gradient(circle_at_bottom_left,_rgba(245,158,11,0.24),_transparent_36%)] p-6 ring-1 ring-stone-200">
-                  <p className="text-sm uppercase tracking-[0.24em] text-stone-500">{story.media}</p>
-                  <div className="space-y-4">
-                    <div className="h-40 rounded-[26px] bg-white/60 ring-1 ring-white/70" />
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="h-16 rounded-[20px] bg-white/45 ring-1 ring-white/70" />
-                      <div className="h-16 rounded-[20px] bg-white/65 ring-1 ring-white/70" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className={index % 2 === 1 ? 'lg:order-1' : ''}>
-                <div className="flex items-center justify-between gap-4">
-                  <h3 className="font-display text-3xl text-stone-900">{story.title}</h3>
-                  <Badge>{story.location}</Badge>
-                </div>
-                <p className="mt-5 text-base leading-8 text-stone-600">{story.narrative}</p>
-                <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                  <div className="rounded-[24px] bg-stone-50 p-4 ring-1 ring-stone-200">
-                    <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Involved</p>
-                    <p className="mt-3 text-sm leading-7 text-stone-600">{story.involved}</p>
-                  </div>
-                  <div className="rounded-[24px] bg-stone-50 p-4 ring-1 ring-stone-200">
-                    <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Who benefited</p>
-                    <p className="mt-3 text-sm leading-7 text-stone-600">{story.benefited}</p>
-                  </div>
-                </div>
-                <div className="mt-6 flex flex-wrap gap-2">
-                  {(story.acceptedTags || []).map((tag) => (
-                    <Badge key={tag} tone="accent">
-                      {tag}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="Community And Contribution"
-          title="Contribution shown as relationships, care, and shared effort"
-          description={example.communityContribution}
-        />
-        <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="rounded-[36px] border border-stone-200/80 bg-white/80 p-8 shadow-soft">
-            <div className="relative grid min-h-[320px] place-items-center rounded-[30px] bg-stone-50 p-8 ring-1 ring-stone-200">
-              <div className="absolute left-10 top-12 rounded-full bg-amber-100 px-4 py-3 text-sm text-amber-900 ring-1 ring-amber-200">
-                Younger people
-              </div>
-              <div className="absolute right-10 top-16 rounded-full bg-teal-100 px-4 py-3 text-sm text-teal-900 ring-1 ring-teal-200">
-                Family spaces
-              </div>
-              <div className="absolute bottom-12 left-16 rounded-full bg-white px-4 py-3 text-sm text-stone-700 ring-1 ring-stone-200">
-                Community hall
-              </div>
-              <div className="absolute bottom-16 right-14 rounded-full bg-white px-4 py-3 text-sm text-stone-700 ring-1 ring-stone-200">
-                Local markets
-              </div>
-              <div className="relative z-10 grid h-28 w-28 place-items-center rounded-full bg-stone-900 text-center text-sm text-white">
-                {example.name}
-              </div>
-            </div>
-          </div>
-          <div className="grid gap-4">
-            {contributionCards.map((card) => (
-              <div key={card.title} className="rounded-[28px] bg-white/80 p-6 shadow-soft ring-1 ring-stone-200">
-                <p className="font-display text-2xl text-stone-900">{card.title}</p>
-                <p className="mt-3 text-sm leading-7 text-stone-600">{card.text}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="Media And Artifacts"
-          title="Images, audio, video, and making traces"
-          description="PathWeave can hold more than text, allowing story to stay connected to media, process, and artifacts."
-        />
-        <div className="grid gap-6 xl:grid-cols-[1.02fr_0.98fr]">
-          <div className="grid gap-4 sm:grid-cols-2">
-            {mediaCards.map((item, index) => (
-              <div
-                key={item}
-                className={`rounded-[28px] p-5 shadow-soft ring-1 ring-stone-200 ${
-                  index === 0 ? 'sm:col-span-2 min-h-[220px]' : 'min-h-[160px]'
-                } bg-[linear-gradient(150deg,_rgba(251,243,227,0.92),_rgba(255,255,255,0.82))]`}
-              >
-                <div className="flex h-full flex-col justify-between">
-                  <span className="text-xs uppercase tracking-[0.22em] text-stone-400">Image</span>
-                  <p className="font-display text-2xl text-stone-900">{item}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="grid gap-4">
-            <div className="rounded-[28px] bg-white/80 p-6 shadow-soft ring-1 ring-stone-200">
-              <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Audio</p>
-              <p className="mt-3 font-display text-2xl text-stone-900">{example.audioCard}</p>
-              <button className="mt-5 rounded-full bg-stone-900 px-4 py-2 text-sm text-white" type="button">
-                Play audio
-              </button>
-            </div>
-            <div className="rounded-[28px] bg-white/80 p-6 shadow-soft ring-1 ring-stone-200">
-              <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Video</p>
-              <div className="mt-4 flex min-h-[170px] items-end rounded-[24px] bg-[linear-gradient(160deg,_rgba(20,184,166,0.16),_rgba(251,243,227,0.76))] p-5 ring-1 ring-stone-200">
-                <p className="font-display text-2xl text-stone-900">{example.videoCard}</p>
-              </div>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {(example.artifacts || []).map((item) => (
-                <div key={item} className="rounded-[24px] bg-stone-50 p-4 ring-1 ring-stone-200">
-                  <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Artifact</p>
-                  <p className="mt-3 text-sm leading-7 text-stone-700">{item}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="space-y-8">
-        <SectionHeading
-          eyebrow="Future Pathways"
-          title="Aspirations held softly"
-          description="Future pathways are shown as possibilities and directions, not as a single job objective statement."
-        />
-        <div className="grid gap-4 md:grid-cols-3">
-          {example.futurePathways.map((item) => (
-            <div key={item} className="rounded-[28px] bg-white/80 p-6 shadow-soft ring-1 ring-stone-200">
-              <p className="font-display text-2xl text-stone-900">{item}</p>
-              <p className="mt-3 text-sm leading-7 text-stone-600">
-                A pathway that can keep care, creativity, learning, and contribution in relationship.
-              </p>
+              <p className="font-['Playfair_Display'] text-[0.68rem] text-stone-900">{story.title}</p>
+              <p className="mt-1 text-[0.42rem] leading-[1.6] text-stone-600">{(story.summary || '').slice(0, 74)}</p>
             </div>
           ))}
         </div>
-      </section>
-
-      <section className="rounded-[36px] border border-stone-200/80 bg-white/80 p-8 shadow-soft">
-        <SectionHeading
-          eyebrow="Optional Translation Layer"
-          title="Approved tags only"
-          description="These tags can support translation for different audiences, but they do not replace the story."
-        />
-        <div className="mt-6 flex flex-wrap gap-3">
-          {example.optionalTags.map((tag) => (
-            <Badge key={tag} tone="accent">
-              {tag}
-            </Badge>
+        <div className="mt-auto flex flex-wrap justify-center gap-1.5">
+          {(output.pathwaysList.length ? output.pathwaysList : output.tags).slice(0, 5).map((item) => (
+            <span key={item} className="rounded-full border border-[#FFD580]/30 bg-white/82 px-2 py-1 text-[0.38rem] text-stone-700">
+              {item}
+            </span>
           ))}
         </div>
-        <p className="mt-6 text-sm leading-7 text-stone-500">Tags are optional and secondary. Meaning stays with the story itself.</p>
-      </section>
+      </div>
+    </div>
+  )
+}
+
+function ExamplePreviewWindow({ dark = false, title, children, wide = false }) {
+  return (
+    <div className={`overflow-hidden rounded-[30px] border ${dark ? 'border-white/10 bg-[#171717]' : 'border-white/45 bg-white/46'} shadow-[0_24px_70px_-40px_rgba(26,26,26,0.28)] backdrop-blur-sm`}>
+      <div className={`flex items-center justify-between border-b px-5 py-3 ${dark ? 'border-white/10 bg-white/5' : 'border-white/50 bg-white/40'}`}>
+        <div className="flex items-center gap-2">
+          <span className={`h-2.5 w-2.5 rounded-full ${dark ? 'bg-white/35' : 'bg-stone-300'}`} />
+          <span className={`h-2.5 w-2.5 rounded-full ${dark ? 'bg-white/20' : 'bg-stone-200'}`} />
+          <span className={`h-2.5 w-2.5 rounded-full ${dark ? 'bg-white/12' : 'bg-stone-100'}`} />
+        </div>
+        <p className={`text-xs uppercase tracking-[0.24em] ${dark ? 'text-white/45' : 'text-stone-400'}`}>{title}</p>
+      </div>
+      <div className={`${dark ? 'bg-[#111111]' : 'bg-[#f9f9f8]'} p-5 sm:p-6`}>
+        <div className={wide ? '' : 'mx-auto max-w-[380px]'}>{children}</div>
+      </div>
+    </div>
+  )
+}
+
+function ExampleProfilePage({ example, onBack, onStart }) {
+  const exampleOutput = buildExampleOutput(example)
+
+  return (
+    <div className="relative isolate overflow-hidden px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
+      <AboutHeroBackdrop />
+      <div className="relative mx-auto max-w-6xl pb-12">
+        <AboutRevealSection className="min-h-[62vh] flex items-start">
+          <div className="w-full">
+            <div className="grid items-start gap-10 py-8 sm:py-10 lg:grid-cols-[minmax(0,1.54fr)_minmax(480px,1.12fr)] lg:gap-14">
+              <div className="max-w-[36rem] -mt-6 pt-0">
+                <h1 className="font-display text-4xl leading-tight text-stone-900 md:text-5xl">
+                  One story,
+                  <br />
+                  <span className="whitespace-nowrap">different forms of presence.</span>
+                </h1>
+                <p className="mt-6 max-w-2xl text-xl leading-8 text-stone-800 md:text-2xl">
+                  This example shows how the same PathWeave profile can remain coherent across immersive, concise, and
+                  structured outputs.
+                </p>
+                <p className="mt-6 max-w-xl text-base leading-8 text-stone-500">
+                  The form changes. The narrative centre does not.
+                </p>
+                <div className="mt-12 flex flex-wrap gap-4 text-sm text-stone-700">
+                  <button
+                    className="rounded-full border border-[rgba(95,76,52,0.22)] bg-white/58 px-5 py-2.5 backdrop-blur-sm transition hover:-translate-y-0.5 hover:bg-white/72 hover:text-stone-900"
+                    onClick={onBack}
+                    type="button"
+                  >
+                    Back
+                  </button>
+                  <button
+                    className="precision-panel-quiet rounded-full border border-[rgba(95,76,52,0.16)] bg-[#f6f1e7]/86 px-5 py-2.5 text-stone-800 transition hover:-translate-y-0.5 hover:bg-white/90"
+                    onClick={onStart}
+                    type="button"
+                  >
+                    Start your own
+                  </button>
+                </div>
+              </div>
+
+              <div className="relative -mt-6 hidden lg:block">
+                <div className="absolute inset-0 translate-x-5 translate-y-6 rounded-[40px] bg-white/18 blur-2xl" />
+                <div className="relative rounded-[40px] border border-white/35 bg-white/20 p-3 backdrop-blur-sm">
+                  <img
+                    alt="Portrait for example PathWeave profile"
+                    className="mx-auto block max-h-[48rem] w-full rounded-[30px] object-contain"
+                    src="https://images.unsplash.com/photo-1604872715218-1d3c2264ced5?q=80&w=1740&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D"
+                  />
+                  <div className="pointer-events-none absolute inset-3 rounded-[30px] bg-[linear-gradient(180deg,rgba(249,247,242,0.02),rgba(39,39,42,0.08))]" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </AboutRevealSection>
+
+        <AboutRevealSection className="py-24 sm:py-32">
+          <div className="mx-auto max-w-3xl">
+            <p className="text-xs uppercase tracking-[0.38em] text-stone-500">Output 1</p>
+            <h2 className="mt-5 font-serif text-4xl tracking-tight text-zinc-800 sm:text-5xl">Full PathWeave</h2>
+            <p className="mt-6 text-base leading-loose text-stone-600">
+              An immersive narrative page where story, contribution, connection, and pathways remain woven together.
+            </p>
+          </div>
+          <div className="mt-12">
+            <ExampleOutputFrame
+              eyebrow="Immersive view"
+              title="Long-form narrative presence"
+              description="This preview follows the same long-scroll language as the dedicated Full PathWeave page, so the reading experience stays editorial and spacious."
+              actions={
+                <a
+                  className="rounded-full border border-[rgba(95,76,52,0.18)] bg-white/38 px-5 py-3 text-sm font-medium text-stone-700 transition hover:-translate-y-0.5 hover:bg-white/55"
+                  href="/outputs/full-pathweave?preset=example"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Open full page
+                </a>
+              }
+            >
+              <ExamplePreviewWindow title="Full PathWeave preview" wide>
+                <iframe
+                  className="block h-[620px] w-full border-0 lg:h-[680px]"
+                  src="/outputs/full-pathweave?preset=example&embedded=1"
+                  title="Full PathWeave preview"
+                />
+              </ExamplePreviewWindow>
+            </ExampleOutputFrame>
+          </div>
+        </AboutRevealSection>
+
+        <AboutRevealSection className="py-24 sm:py-32">
+          <div className="mx-auto max-w-3xl">
+            <p className="text-xs uppercase tracking-[0.38em] text-stone-500">Output 2 and 3</p>
+            <h2 className="mt-5 font-serif text-4xl tracking-tight text-zinc-800 sm:text-5xl">Different forms, same source</h2>
+            <p className="mt-6 text-base leading-loose text-stone-600">
+              A summary can become more concise. Structured data can become more portable. Neither should erase the
+              original narrative logic.
+            </p>
+          </div>
+          <div className="mt-12 grid gap-8 xl:grid-cols-2">
+            <ExampleOutputFrame
+              eyebrow="Summary export"
+              title="Concise narrative"
+              description="A one-page view that stays readable and print-friendly while keeping story and contribution visible."
+              actions={
+                <a
+                  className="rounded-full border border-[rgba(95,76,52,0.18)] bg-white/38 px-5 py-3 text-sm font-medium text-stone-700 transition hover:-translate-y-0.5 hover:bg-white/55"
+                  href="/outputs/summary?preset=example"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Open summary
+                </a>
+              }
+            >
+              <ExamplePreviewWindow title="Summary Export preview">
+                <ExampleOutputThumbnail output={exampleOutput} variant="summary" />
+              </ExamplePreviewWindow>
+            </ExampleOutputFrame>
+
+            <ExampleOutputFrame
+              eyebrow="Structured JSON"
+              title="Portable narrative data"
+              description="A structured representation of the same profile, framed as portability and user control rather than technical reduction."
+              tone="dark"
+              actions={
+                <a
+                  className="rounded-full border border-white/20 bg-white/10 px-5 py-3 text-sm font-medium text-white transition hover:-translate-y-0.5 hover:bg-white/16"
+                  href="/outputs/structured?preset=example"
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Open structured
+                </a>
+              }
+            >
+              <ExamplePreviewWindow dark title="Structured JSON preview">
+                <ExampleOutputThumbnail output={exampleOutput} variant="structured" />
+              </ExamplePreviewWindow>
+            </ExampleOutputFrame>
+          </div>
+        </AboutRevealSection>
+      </div>
     </div>
   )
 }
@@ -1968,10 +2224,14 @@ function BuilderPage({
   setDraftStory,
   showTagsInProfile,
   setShowTagsInProfile,
+  initialStep = 0,
 }) {
-  const [currentStep, setCurrentStep] = useState(0)
+  const topRef = useRef(null)
+  const previousStepRef = useRef(null)
+  const [currentStep, setCurrentStep] = useState(initialStep)
   const [reviewTab, setReviewTab] = useState('portfolio')
   const [shareMode, setShareMode] = useState('shared')
+  const [weavePulse, setWeavePulse] = useState(0)
   const [shareConfig, setShareConfig] = useState({
     selectedStories: stories.map((story) => story.id),
     includeTags: showTagsInProfile,
@@ -1988,26 +2248,50 @@ function BuilderPage({
 
   const step = wizardSteps[currentStep]
   const selectedStories = stories.filter((story) => shareConfig.selectedStories.includes(story.id))
+  const triggerWeave = () => setWeavePulse((current) => current + 1)
+
+  useEffect(() => {
+    setCurrentStep(initialStep)
+  }, [initialStep])
+
+  useEffect(() => {
+    if (previousStepRef.current === null) {
+      previousStepRef.current = currentStep
+      return
+    }
+
+    if (previousStepRef.current === currentStep) {
+      return
+    }
+
+    previousStepRef.current = currentStep
+    topRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' })
+  }, [currentStep])
 
   const addStory = () => {
     if (!draftStory.title.trim() || !draftStory.narrative.trim()) {
       return
     }
 
+    const involved = createTrackedStoryField(profile.involvedPeople, draftStory.involved)
+    const benefited = createTrackedStoryField(profile.benefitedPeople, draftStory.benefited)
+
     setStories((current) => [
       ...current,
-      {
+      normalizeStory({
         ...draftStory,
         id: `story-${Date.now()}`,
-        involved: profile.involvedPeople || draftStory.involved || '',
-        benefited: profile.benefitedPeople || draftStory.benefited || '',
+        involved,
+        benefited,
+        contextSnapshot: String(profile.placeConnection || '').trim(),
         media: [draftStory.image, draftStory.audio, draftStory.video].filter(Boolean).join(' / ') || 'Story media',
         tags: [],
         suggestedTags: suggestedTagLibrary.slice(0, 3),
         acceptedTags: suggestedTagLibrary.slice(0, 2),
-      },
+      }),
     ])
     setDraftStory(defaultDraftStory)
+    triggerWeave()
   }
 
   const updateAcceptedTags = (storyId, nextTags) => {
@@ -2022,122 +2306,102 @@ function BuilderPage({
   const prevStep = () => setCurrentStep((current) => Math.max(current - 1, 0))
 
   return (
-    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <section className="min-w-0">
-        <div className="relative overflow-hidden rounded-[36px] border border-stone-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.92),rgba(252,248,242,0.84))] p-6 shadow-soft sm:p-8">
-          <WeaveBands />
-          <div className="relative flex flex-col gap-5 border-b border-stone-200/80 pb-6">
-            <div className="flex items-center justify-between gap-4">
+    <div className="relative isolate overflow-hidden rounded-[42px] px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+      <BuilderWeaveBackdrop progress={(currentStep + 1) / wizardSteps.length} pulse={weavePulse} />
+      <div className="relative grid gap-10 xl:grid-cols-[minmax(0,1fr)_360px] xl:gap-14">
+        <section className="min-w-0 scroll-mt-28 sm:scroll-mt-32" ref={topRef}>
+          <div className="relative">
+            <div className="flex flex-col gap-5 pb-8">
+              <div className="flex flex-wrap items-start justify-between gap-5">
+                <div className="max-w-2xl">
+                  <p className="text-xs uppercase tracking-[0.36em] text-stone-500">Guided builder</p>
+                  <h1 className="mt-4 font-serif text-4xl tracking-tight text-zinc-800 md:text-5xl">{step.label}</h1>
+                  <p className="mt-3 max-w-xl text-base leading-relaxed text-stone-600">{step.phase}</p>
+                </div>
+                <p className="weave-breadcrumb text-sm text-stone-600">
+                  Thread {currentStep + 1} of {wizardSteps.length}
+                </p>
+              </div>
+              <GoldenThreadStepper currentStep={currentStep} onSelectStep={setCurrentStep} />
+            </div>
+
+            <div className="relative min-h-[560px]">
+              <div key={step.id} className="step-canvas-enter">
+                {currentStep === 0 ? <StoryStep profile={profile} setProfile={setProfile} triggerWeave={triggerWeave} /> : null}
+                {currentStep === 1 ? <ConnectionsStep profile={profile} setProfile={setProfile} triggerWeave={triggerWeave} /> : null}
+                {currentStep === 2 ? <PathwaysStep profile={profile} setProfile={setProfile} triggerWeave={triggerWeave} /> : null}
+                {currentStep === 3 ? (
+                  <StoriesStep
+                    addStory={addStory}
+                    draftStory={draftStory}
+                    profile={profile}
+                    setDraftStory={setDraftStory}
+                    stories={stories}
+                    triggerWeave={triggerWeave}
+                  />
+                ) : null}
+                {currentStep === 4 ? (
+                  <ReviewStep
+                    reviewTab={reviewTab}
+                    selectedStories={selectedStories}
+                    setReviewTab={setReviewTab}
+                    setShareConfig={setShareConfig}
+                    setShowTagsInProfile={setShowTagsInProfile}
+                    showTagsInProfile={showTagsInProfile}
+                    stories={stories}
+                    triggerWeave={triggerWeave}
+                    updateAcceptedTags={updateAcceptedTags}
+                    updateStoryField={updateStoryField}
+                  />
+                ) : null}
+                {currentStep === 5 ? (
+                  <ShareStep
+                    profile={profile}
+                    selectedStories={selectedStories}
+                    setShareConfig={setShareConfig}
+                    setShareMode={setShareMode}
+                    shareConfig={shareConfig}
+                    shareMode={shareMode}
+                    stories={stories}
+                    triggerWeave={triggerWeave}
+                  />
+                ) : null}
+              </div>
+            </div>
+
+            <div className="relative mt-10 flex flex-wrap items-center justify-between gap-4 border-t border-[rgba(95,76,52,0.12)] pt-6">
               <div>
-                <p className="text-sm uppercase tracking-[0.32em] text-stone-500">Guided builder</p>
-                <h1 className="mt-3 font-display text-3xl text-stone-900 md:text-4xl">{step.label}</h1>
-                <p className="mt-2 text-sm leading-6 text-stone-500">{step.phase}</p>
+                <p className="font-serif text-xl tracking-tight text-zinc-800">{step.label}</p>
+                <p className="mt-1 text-sm leading-relaxed text-stone-500">
+                  {currentStep < wizardSteps.length - 1 ? `Next: ${wizardSteps[currentStep + 1].label}` : 'Ready to share your PathWeave'}
+                </p>
               </div>
-              <span className="rounded-full bg-stone-100 px-4 py-2 text-sm text-stone-600">
-                Step {currentStep + 1} of {wizardSteps.length}
-              </span>
-            </div>
-            <div className="space-y-4">
-              <div className="h-2 overflow-hidden rounded-full bg-stone-200">
-                <div
-                  className="h-full rounded-full bg-stone-900 transition-all duration-500"
-                  style={{ width: `${((currentStep + 1) / wizardSteps.length) * 100}%` }}
-                />
-              </div>
-              <div className="relative grid gap-3 md:grid-cols-6">
-                <div className="pointer-events-none absolute left-0 right-0 top-5 hidden h-px bg-[linear-gradient(90deg,rgba(245,158,11,0.35),rgba(20,184,166,0.3),rgba(245,158,11,0.2))] md:block" />
-                {wizardSteps.map((item, index) => (
-                  <button
-                    key={item.id}
-                    className={`relative rounded-[24px] px-3 py-3 text-left transition ${
-                      index === currentStep
-                        ? 'bg-stone-900 text-white'
-                        : index < currentStep
-                          ? 'bg-teal-50 text-teal-900 ring-1 ring-teal-200'
-                          : 'bg-stone-50 text-stone-500 ring-1 ring-stone-200'
-                    }`}
-                    onClick={() => setCurrentStep(index)}
-                    type="button"
-                  >
-                    <div className="flex items-start gap-3">
-                      <ThreadMarker active={index === currentStep} completed={index < currentStep} index={index} />
-                      <div className="min-w-0">
-                        <p className="text-[11px] uppercase tracking-[0.24em] opacity-70">0{index + 1}</p>
-                        <p className="mt-2 text-sm font-medium">{item.label}</p>
-                        <p className={`mt-1 text-xs leading-5 ${index === currentStep ? 'text-white/70' : index < currentStep ? 'text-teal-900/75' : 'text-stone-400'}`}>
-                          {item.phase}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-                ))}
+              <div className="flex gap-3">
+                <button
+                  className="rounded-full border border-[rgba(95,76,52,0.18)] bg-white/30 px-5 py-3 text-sm text-stone-700 backdrop-blur-sm transition hover:-translate-y-0.5 hover:bg-white/45 disabled:opacity-40"
+                  disabled={currentStep === 0}
+                  onClick={prevStep}
+                  type="button"
+                >
+                  Back
+                </button>
+                <button
+                  className="rounded-full border border-stone-900 bg-stone-900/90 px-5 py-3 text-sm font-medium text-white shadow-[0_18px_38px_-24px_rgba(41,37,36,0.7)] backdrop-blur-sm transition hover:-translate-y-0.5 hover:bg-stone-800"
+                  onClick={nextStep}
+                  type="button"
+                >
+                  {currentStep === wizardSteps.length - 1 ? 'Finish review' : 'Continue'}
+                </button>
               </div>
             </div>
           </div>
+        </section>
 
-          <div className="relative mt-8 min-h-[560px] transition-all duration-300">
-            {currentStep === 0 ? <StoryStep profile={profile} setProfile={setProfile} /> : null}
-            {currentStep === 1 ? <ConnectionsStep profile={profile} setProfile={setProfile} /> : null}
-            {currentStep === 2 ? <PathwaysStep profile={profile} setProfile={setProfile} /> : null}
-            {currentStep === 3 ? <StoriesStep addStory={addStory} draftStory={draftStory} setDraftStory={setDraftStory} stories={stories} /> : null}
-            {currentStep === 4 ? (
-              <ReviewStep
-                reviewTab={reviewTab}
-                selectedStories={selectedStories}
-                setReviewTab={setReviewTab}
-                setShareConfig={setShareConfig}
-                setShowTagsInProfile={setShowTagsInProfile}
-                showTagsInProfile={showTagsInProfile}
-                stories={stories}
-                updateAcceptedTags={updateAcceptedTags}
-                updateStoryField={updateStoryField}
-              />
-            ) : null}
-            {currentStep === 5 ? (
-              <ShareStep
-                profile={profile}
-                selectedStories={selectedStories}
-                setShareConfig={setShareConfig}
-                setShareMode={setShareMode}
-                shareConfig={shareConfig}
-                shareMode={shareMode}
-                stories={stories}
-              />
-            ) : null}
-          </div>
-
-          <div className="relative mt-8 flex flex-wrap items-center justify-between gap-4 border-t border-stone-200/80 pt-6">
-            <div>
-              <p className="text-sm font-medium text-stone-900">{step.label}</p>
-              <p className="text-sm text-stone-500">
-                {currentStep < wizardSteps.length - 1 ? `Next: ${wizardSteps[currentStep + 1].label}` : 'Ready to share your PathWeave'}
-              </p>
-            </div>
-            <div className="flex gap-3">
-              <button
-                className="rounded-full border border-stone-300 px-5 py-3 text-sm text-stone-700 disabled:opacity-40"
-                disabled={currentStep === 0}
-                onClick={prevStep}
-                type="button"
-              >
-                Back
-              </button>
-              <button
-                className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white"
-                onClick={nextStep}
-                type="button"
-              >
-                {currentStep === wizardSteps.length - 1 ? 'Finish review' : 'Continue'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <aside className="hidden xl:block">
+        <aside className="hidden xl:block">
         <div className="sticky top-28">
           <WeaveProgressPanel
             currentStep={currentStep}
+            pulse={weavePulse}
             profile={profile}
             shareConfig={shareConfig}
             shareMode={shareMode}
@@ -2145,35 +2409,34 @@ function BuilderPage({
             stories={stories}
           />
         </div>
-      </aside>
+        </aside>
+      </div>
     </div>
   )
 }
 
 function StepIntro({ eyebrow = 'Weaving step', title, description, chips, note }) {
   return (
-    <div className="relative overflow-hidden rounded-[30px] border border-stone-200/80 bg-[linear-gradient(155deg,_rgba(251,243,227,0.9),_rgba(255,255,255,0.8))] p-6 shadow-soft">
+    <div className="relative overflow-hidden rounded-[34px] border border-white/35 bg-white/18 p-6 backdrop-blur-[10px] sm:p-7">
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-10 top-7 h-16 w-56 rotate-[9deg] rounded-full bg-amber-200/38 blur-xl" />
-        <div className="absolute right-[-2.5rem] top-12 h-16 w-52 -rotate-[12deg] rounded-full bg-teal-200/28 blur-xl" />
-        <div className="absolute left-[22%] bottom-5 h-12 w-40 -rotate-[18deg] rounded-full bg-white/70 blur-lg" />
-        <div className="absolute right-[18%] bottom-7 h-12 w-40 rotate-[16deg] rounded-full bg-white/55 blur-lg" />
+        <div className="absolute -left-8 top-8 h-14 w-52 rotate-[9deg] rounded-full bg-[#f2e3c4]/45 blur-xl" />
+        <div className="absolute right-[-1.5rem] top-14 h-14 w-44 -rotate-[11deg] rounded-full bg-white/45 blur-xl" />
       </div>
       <div className="relative">
-        <p className="text-xs uppercase tracking-[0.3em] text-stone-500">{eyebrow}</p>
-        <h2 className="mt-3 font-display text-3xl text-stone-900">{title}</h2>
-        <p className="mt-3 max-w-2xl text-base leading-7 text-stone-600">{description}</p>
+        <p className="text-xs uppercase tracking-[0.34em] text-stone-500">{eyebrow}</p>
+        <h2 className="mt-4 font-serif text-4xl tracking-tight text-zinc-800 md:text-[2.8rem]">{title}</h2>
+        <p className="mt-4 max-w-3xl text-base leading-relaxed text-stone-600 md:text-lg">{description}</p>
         {chips?.length ? (
-          <div className="mt-5 flex flex-wrap gap-2">
+          <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2">
             {chips.map((chip, index) => (
               <span
                 key={chip}
-                className={`rounded-full px-4 py-2 text-sm ${
+                className={`border-b px-0 py-2 text-sm ${
                   index % 3 === 0
-                    ? 'bg-white/85 text-stone-700 ring-1 ring-stone-200'
+                    ? 'border-[rgba(95,76,52,0.18)] text-stone-700'
                     : index % 3 === 1
-                      ? 'bg-amber-50 text-amber-900 ring-1 ring-amber-200'
-                      : 'bg-teal-50 text-teal-900 ring-1 ring-teal-200'
+                      ? 'border-[rgba(201,151,69,0.28)] text-amber-900'
+                      : 'border-[rgba(129,148,134,0.3)] text-teal-900'
                 }`}
               >
                 {chip}
@@ -2181,13 +2444,13 @@ function StepIntro({ eyebrow = 'Weaving step', title, description, chips, note }
             ))}
           </div>
         ) : null}
-        {note ? <p className="mt-5 max-w-2xl text-sm leading-6 text-stone-500">{note}</p> : null}
+        {note ? <p className="mt-6 max-w-2xl text-sm leading-relaxed text-stone-500">{note}</p> : null}
       </div>
     </div>
   )
 }
 
-function StoryStep({ profile, setProfile }) {
+function StoryStep({ profile, setProfile, triggerWeave }) {
   const promptChips = [
     'I learn through care and community',
     'My pathway has been shaped by people and place',
@@ -2204,21 +2467,20 @@ function StoryStep({ profile, setProfile }) {
         note="This first step establishes the opening thread of your PathWeave."
       />
       <div className="grid gap-5">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-x-5 gap-y-2">
           {promptChips.map((chip) => (
-            <button
+            <WeaveTag
               key={chip}
-              className="rounded-full bg-stone-100 px-4 py-2 text-sm text-stone-600 transition hover:bg-stone-200"
-              onClick={() =>
+              onClick={() => {
                 setProfile((current) => ({
                   ...current,
                   narrativeIntro: current.narrativeIntro ? `${current.narrativeIntro} ${chip}` : chip,
                 }))
-              }
-              type="button"
+                triggerWeave()
+              }}
             >
               {chip}
-            </button>
+            </WeaveTag>
           ))}
         </div>
         <Field
@@ -2226,21 +2488,24 @@ function StoryStep({ profile, setProfile }) {
           multiline
           placeholder="In a few sentences, how would you like to introduce your story?"
           value={profile.narrativeIntro}
-          onChange={(value) => setProfile((current) => ({ ...current, narrativeIntro: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, narrativeIntro: value }))
+            triggerWeave()
+          }}
         />
       </div>
     </div>
   )
 }
 
-function ConnectionsStep({ profile, setProfile }) {
+function ConnectionsStep({ profile, setProfile, triggerWeave }) {
   return (
     <div className="space-y-8">
       <StepIntro
         eyebrow="Thread 2 of 6"
         title="Add connection and context"
         description="Expand the story beyond the individual by making relationships, contribution, and place visible."
-        chips={['connected with', 'involved', 'benefited', 'place']}
+        chips={['connected with', 'involved', 'walked alongside', 'place']}
         note="Here the weave widens from personal story toward people, community, and place."
       />
       <div className="grid gap-5">
@@ -2249,33 +2514,45 @@ function ConnectionsStep({ profile, setProfile }) {
           multiline
           placeholder="Family, community, collaborators, mentors, groups"
           value={profile.connectedWith || ''}
-          onChange={(value) => setProfile((current) => ({ ...current, connectedWith: value, communityConnections: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, connectedWith: value, communityConnections: value }))
+            triggerWeave()
+          }}
         />
         <Field
           label="Who was involved"
           placeholder="Who helped shape the work or experience?"
           value={profile.involvedPeople || ''}
-          onChange={(value) => setProfile((current) => ({ ...current, involvedPeople: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, involvedPeople: value }))
+            triggerWeave()
+          }}
         />
         <Field
-          label="Who benefited"
-          placeholder="Who gained from the story or contribution?"
+          label="Who did you walk alongside"
+          placeholder="Who shaped this with you?"
           value={profile.benefitedPeople || ''}
-          onChange={(value) => setProfile((current) => ({ ...current, benefitedPeople: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, benefitedPeople: value }))
+            triggerWeave()
+          }}
         />
         <Field
           label="Place / community"
           multiline
           placeholder="What places or communities shape the story?"
           value={profile.placeConnection}
-          onChange={(value) => setProfile((current) => ({ ...current, placeConnection: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, placeConnection: value }))
+            triggerWeave()
+          }}
         />
       </div>
     </div>
   )
 }
 
-function PathwaysStep({ profile, setProfile }) {
+function PathwaysStep({ profile, setProfile, triggerWeave }) {
   return (
     <div className="space-y-8">
       <StepIntro
@@ -2283,34 +2560,144 @@ function PathwaysStep({ profile, setProfile }) {
         title="Shape what matters next"
         description="Move gently from present experience toward interests, aspirations, and future directions."
         chips={['interests', 'aspirations', 'future directions', 'pathways']}
-        note="Pathways stay open here. This is about direction and possibility, not a career objective."
+        note="Pathways stay open here. This is about direction and possibility, not a fixed statement about what comes next."
       />
       <div className="grid gap-5">
         <Field
           label="Interests"
           placeholder="creative facilitation, mentoring, community work"
           value={profile.interests || ''}
-          onChange={(value) => setProfile((current) => ({ ...current, interests: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, interests: value }))
+            triggerWeave()
+          }}
         />
         <Field
           label="Aspirations"
           multiline
           placeholder="What futures, possibilities, or directions matter to you?"
           value={profile.aspirations || ''}
-          onChange={(value) => setProfile((current) => ({ ...current, aspirations: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, aspirations: value }))
+            triggerWeave()
+          }}
         />
         <Field
           label="Future directions / pathways"
           placeholder="learning, work, enterprise, community pathways"
           value={profile.futurePathways}
-          onChange={(value) => setProfile((current) => ({ ...current, futurePathways: value }))}
+          onChange={(value) => {
+            setProfile((current) => ({ ...current, futurePathways: value }))
+            triggerWeave()
+          }}
         />
       </div>
     </div>
   )
 }
 
-function StoriesStep({ draftStory, setDraftStory, stories, addStory }) {
+function StoryContextField({
+  description,
+  fieldKey,
+  inheritedValue,
+  label,
+  overrideMode,
+  setDraftStory,
+  setOverrideMode,
+  storySpecificValue,
+  triggerWeave,
+}) {
+  const hasInheritedValue = Boolean(String(inheritedValue || '').trim())
+
+  return (
+    <div className="rounded-[30px] border border-white/40 bg-white/25 p-5 backdrop-blur-sm">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-sm font-medium text-stone-900">{label}</p>
+        {hasInheritedValue && !overrideMode ? <EditorialMetaTag>From your connections</EditorialMetaTag> : null}
+      </div>
+      <p className="mt-2 text-sm leading-6 text-stone-500">{description}</p>
+
+      {hasInheritedValue && !overrideMode ? (
+        <div className="mt-4 space-y-4 rounded-[22px] bg-white/55 px-4 py-4 ring-1 ring-white/60 backdrop-blur-sm">
+          <p className="text-sm leading-7 text-stone-700">{inheritedValue}</p>
+          <div className="flex flex-wrap gap-3">
+            <button
+              className="rounded-full bg-stone-900/90 px-4 py-2 text-xs font-medium text-white"
+              onClick={() => {
+                setOverrideMode(false)
+                triggerWeave()
+              }}
+              type="button"
+            >
+              Keep as inherited
+            </button>
+            <button
+              className="rounded-full border border-[rgba(95,76,52,0.18)] bg-white/30 px-4 py-2 text-xs font-medium text-stone-700 transition hover:-translate-y-0.5 hover:bg-white/45"
+              onClick={() => {
+                setOverrideMode(true)
+                triggerWeave()
+              }}
+              type="button"
+            >
+              Override with story-specific context
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {!hasInheritedValue || overrideMode ? (
+        <div className="mt-4 space-y-3">
+          {hasInheritedValue ? (
+            <div className="flex flex-wrap gap-3">
+              <button
+                className="rounded-full border border-[rgba(95,76,52,0.18)] bg-white/30 px-4 py-2 text-xs font-medium text-stone-700 transition hover:-translate-y-0.5 hover:bg-white/45"
+                onClick={() => {
+                  setDraftStory((current) => ({ ...current, [fieldKey]: '' }))
+                  setOverrideMode(false)
+                  triggerWeave()
+                }}
+                type="button"
+              >
+                Keep as inherited instead
+              </button>
+            </div>
+          ) : null}
+          <Field
+            label={label}
+            placeholder={hasInheritedValue ? 'Name the people or community specific to this story' : 'Add story-specific context'}
+            value={storySpecificValue}
+            onChange={(value) => {
+              setDraftStory((current) => ({ ...current, [fieldKey]: value }))
+              triggerWeave()
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function StoriesStep({ draftStory, profile, setDraftStory, stories, addStory, triggerWeave }) {
+  const [overrideMode, setOverrideMode] = useState({
+    involved: Boolean(String(draftStory.involved || '').trim()),
+    benefited: Boolean(String(draftStory.benefited || '').trim()),
+  })
+
+  useEffect(() => {
+    if (isPristineDraftStory(draftStory)) {
+      setOverrideMode({ involved: false, benefited: false })
+      return
+    }
+
+    setOverrideMode((current) => ({
+      involved: current.involved || Boolean(String(draftStory.involved || '').trim()),
+      benefited: current.benefited || Boolean(String(draftStory.benefited || '').trim()),
+    }))
+  }, [draftStory])
+
+  const involvedPreview = createTrackedStoryField(profile.involvedPeople, draftStory.involved)
+  const benefitedPreview = createTrackedStoryField(profile.benefitedPeople, draftStory.benefited)
+
   return (
     <div className="space-y-8">
       <StepIntro
@@ -2325,49 +2712,107 @@ function StoriesStep({ draftStory, setDraftStory, stories, addStory }) {
           label="Title"
           placeholder="What would you call this story?"
           value={draftStory.title}
-          onChange={(value) => setDraftStory((current) => ({ ...current, title: value }))}
+          onChange={(value) => {
+            setDraftStory((current) => ({ ...current, title: value }))
+            triggerWeave()
+          }}
         />
         <Field
           label="Narrative"
           multiline
           placeholder="Tell the story in your own words."
           value={draftStory.narrative}
-          onChange={(value) => setDraftStory((current) => ({ ...current, narrative: value }))}
+          onChange={(value) => {
+            setDraftStory((current) => ({ ...current, narrative: value }))
+            triggerWeave()
+          }}
         />
+        <div className="grid gap-5 lg:grid-cols-2">
+          <StoryContextField
+            description="Keep this connected to the people who walked with you, or name the relationships that belong to this story alone."
+            fieldKey="involved"
+            inheritedValue={involvedPreview.isInherited ? involvedPreview.value : profile.involvedPeople}
+            label="Who walked with you"
+            overrideMode={overrideMode.involved}
+            setDraftStory={setDraftStory}
+            setOverrideMode={(value) => setOverrideMode((current) => ({ ...current, involved: value }))}
+            storySpecificValue={draftStory.involved}
+            triggerWeave={triggerWeave}
+          />
+          <StoryContextField
+            description="Show who this story held, supported, or opened something up for."
+            fieldKey="benefited"
+            inheritedValue={benefitedPreview.isInherited ? benefitedPreview.value : profile.benefitedPeople}
+            label="Who felt the impact"
+            overrideMode={overrideMode.benefited}
+            setDraftStory={setDraftStory}
+            setOverrideMode={(value) => setOverrideMode((current) => ({ ...current, benefited: value }))}
+            storySpecificValue={draftStory.benefited}
+            triggerWeave={triggerWeave}
+          />
+        </div>
+        {profile.placeConnection ? (
+          <div className="rounded-[28px] border border-amber-200/80 bg-amber-50/80 p-5 text-sm leading-7 text-amber-950">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="font-medium">Place carried into this story</p>
+              <EditorialMetaTag className="bg-amber-100 text-amber-900 ring-amber-200">Saved as context snapshot</EditorialMetaTag>
+            </div>
+            <p className="mt-3">{profile.placeConnection}</p>
+          </div>
+        ) : null}
         <div className="grid gap-5 md:grid-cols-2">
           <Field
             label="Image"
             placeholder="Image label or placeholder"
             value={draftStory.image}
-            onChange={(value) => setDraftStory((current) => ({ ...current, image: value }))}
+            onChange={(value) => {
+              setDraftStory((current) => ({ ...current, image: value }))
+              triggerWeave()
+            }}
           />
           <Field
             label="Audio"
             placeholder="Audio introduction or reflection"
             value={draftStory.audio}
-            onChange={(value) => setDraftStory((current) => ({ ...current, audio: value }))}
+            onChange={(value) => {
+              setDraftStory((current) => ({ ...current, audio: value }))
+              triggerWeave()
+            }}
           />
           <Field
             label="Video"
             placeholder="Video clip or walkthrough"
             value={draftStory.video}
-            onChange={(value) => setDraftStory((current) => ({ ...current, video: value }))}
+            onChange={(value) => {
+              setDraftStory((current) => ({ ...current, video: value }))
+              triggerWeave()
+            }}
           />
           <Field
             label="Location"
             placeholder="Where did this happen?"
             value={draftStory.location}
-            onChange={(value) => setDraftStory((current) => ({ ...current, location: value }))}
+            onChange={(value) => {
+              setDraftStory((current) => ({ ...current, location: value }))
+              triggerWeave()
+            }}
           />
           <SelectField
             label="Privacy"
             options={['Share in my PathWeave', 'Only for selected sharing', 'Keep private for now']}
             value={draftStory.privacy}
-            onChange={(value) => setDraftStory((current) => ({ ...current, privacy: value }))}
+            onChange={(value) => {
+              setDraftStory((current) => ({ ...current, privacy: value }))
+              triggerWeave()
+            }}
           />
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          <button className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white" onClick={addStory} type="button">
+          <button
+            className="rounded-full border border-stone-900 bg-stone-900/90 px-5 py-3 text-sm font-medium text-white shadow-[0_18px_38px_-24px_rgba(41,37,36,0.7)] transition hover:-translate-y-0.5 hover:bg-stone-800"
+            onClick={addStory}
+            type="button"
+          >
             Add story
           </button>
           <p className="text-sm text-stone-500">{stories.length} stories in your PathWeave</p>
@@ -2387,6 +2832,7 @@ function ReviewStep({
   setShowTagsInProfile,
   reviewTab,
   setReviewTab,
+  triggerWeave,
 }) {
   return (
     <div className="space-y-8">
@@ -2397,28 +2843,30 @@ function ReviewStep({
         chips={['Story & Portfolio', 'Tags & Sharing']}
         note="This is where the weave is checked carefully, without assuming everything should be shown."
       />
-      <div className="flex gap-2 rounded-full bg-stone-100 p-1">
+      <div className="flex flex-wrap gap-x-6 gap-y-2">
         {[
           ['portfolio', 'Story & Portfolio'],
           ['tags', 'Tags & Sharing'],
         ].map(([id, label]) => (
-          <button
+          <WeaveTag
             key={id}
-            className={`rounded-full px-4 py-2 text-sm ${reviewTab === id ? 'bg-stone-900 text-white' : 'text-stone-600'}`}
-            onClick={() => setReviewTab(id)}
-            type="button"
+            active={reviewTab === id}
+            onClick={() => {
+              setReviewTab(id)
+              triggerWeave()
+            }}
           >
             {label}
-          </button>
+          </WeaveTag>
         ))}
       </div>
       {reviewTab === 'portfolio' ? (
         <div className="space-y-5">
-          <div className="rounded-[28px] bg-stone-50 p-6 ring-1 ring-stone-200">
+          <div className="rounded-[30px] border border-white/35 bg-white/30 p-6 ring-1 ring-white/40 backdrop-blur-sm">
             <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Portfolio preview</p>
             <div className="mt-4 grid gap-4">
               {selectedStories.map((story) => (
-                <article key={story.id} className="rounded-[24px] bg-white p-5 ring-1 ring-stone-200">
+                <article key={story.id} className="rounded-[24px] bg-white/55 p-5 ring-1 ring-white/70 backdrop-blur-sm">
                   <div className="flex items-center justify-between gap-4">
                     <p className="font-display text-2xl text-stone-900">{story.title}</p>
                     <Badge>{story.location}</Badge>
@@ -2431,18 +2879,19 @@ function ReviewStep({
           <div className="space-y-3">
             <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Choose which stories appear in the portfolio</p>
             {stories.map((story) => (
-              <label key={story.id} className="flex items-start gap-4 rounded-[24px] bg-stone-50 p-4 ring-1 ring-stone-200">
+              <label key={story.id} className="flex items-start gap-4 rounded-[24px] bg-white/30 p-4 ring-1 ring-white/50 backdrop-blur-sm">
                 <input
                   checked={selectedStories.some((item) => item.id === story.id)}
                   className="mt-1"
-                  onChange={() =>
+                  onChange={() => {
                     setShareConfig((current) => ({
                       ...current,
                       selectedStories: current.selectedStories.includes(story.id)
                         ? current.selectedStories.filter((item) => item !== story.id)
                         : [...current.selectedStories, story.id],
                     }))
-                  }
+                    triggerWeave()
+                  }}
                   type="checkbox"
                 />
                 <div>
@@ -2456,14 +2905,17 @@ function ReviewStep({
       ) : null}
       {reviewTab === 'tags' ? (
         <div className="space-y-5">
-          <label className="flex items-center justify-between rounded-[24px] bg-stone-50 px-5 py-4 ring-1 ring-stone-200">
+          <label className="flex items-center justify-between rounded-[24px] bg-white/30 px-5 py-4 ring-1 ring-white/50 backdrop-blur-sm">
             <div>
               <p className="font-medium text-stone-900">Show tags in my profile</p>
               <p className="text-sm text-stone-500">Stories remain visible even when tags are hidden.</p>
             </div>
             <button
               className={`relative h-8 w-14 rounded-full transition ${showTagsInProfile ? 'bg-stone-900' : 'bg-stone-300'}`}
-              onClick={() => setShowTagsInProfile((current) => !current)}
+              onClick={() => {
+                setShowTagsInProfile((current) => !current)
+                triggerWeave()
+              }}
               type="button"
             >
               <span className={`absolute top-1 h-6 w-6 rounded-full bg-white transition ${showTagsInProfile ? 'left-7' : 'left-1'}`} />
@@ -2476,6 +2928,7 @@ function ReviewStep({
                 onChange={updateAcceptedTags}
                 onPrivacyChange={(value) => updateStoryField(story.id, 'privacy', value)}
                 story={story}
+                triggerWeave={triggerWeave}
               />
             ))}
           </div>
@@ -2485,9 +2938,19 @@ function ReviewStep({
   )
 }
 
-function ShareStep({ profile, stories, selectedStories, shareMode, setShareMode, shareConfig, setShareConfig }) {
+function ShareStep({ profile, stories, selectedStories, shareMode, setShareMode, shareConfig, setShareConfig, triggerWeave }) {
   const [reviewOpen, setReviewOpen] = useState(false)
-  const exportPayload = buildExportPayload(profile, selectedStories, shareConfig)
+  const navigate = useNavigate()
+  const outputData = buildPathWeaveOutput(profile, selectedStories, shareConfig)
+  const outputModes = Object.entries(exportModeDetails).map(([key, info]) => ({
+    key,
+    ...info,
+  }))
+
+  const handleModeChange = (nextMode) => {
+    setShareMode(nextMode)
+    triggerWeave()
+  }
 
   return (
     <div className="space-y-8">
@@ -2498,40 +2961,68 @@ function ShareStep({ profile, stories, selectedStories, shareMode, setShareMode,
         chips={['shared view', 'summary export', 'structured json']}
         note="Sharing happens last, after the weave has been gathered and reviewed."
       />
-      <div className="grid gap-4 lg:grid-cols-3">
-        {Object.entries(exportModeDetails).map(([key, info]) => (
-          <button
-            key={key}
-            className={`rounded-[28px] border p-5 text-left transition ${
-              shareMode === key ? 'border-stone-900 bg-stone-900 text-white' : 'border-stone-200 bg-stone-50 text-stone-800'
-            }`}
-            onClick={() => setShareMode(key)}
-            type="button"
-          >
-            <p className="text-xs uppercase tracking-[0.24em] opacity-70">{info.label}</p>
-            <p className="mt-3 font-display text-2xl">{info.title}</p>
-            <p className="mt-3 text-sm leading-6 opacity-80">{info.description}</p>
-          </button>
-        ))}
-      </div>
-      <div className="rounded-[28px] bg-stone-50 p-6 ring-1 ring-stone-200">
+      <OutputModeSwitcher modes={outputModes} onChange={handleModeChange} value={shareMode} />
+      <div className="rounded-[30px] border border-white/35 bg-white/30 p-6 ring-1 ring-white/40 backdrop-blur-sm">
         <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Selected output</p>
         <p className="mt-3 font-display text-3xl text-stone-900">{exportModeDetails[shareMode].title}</p>
         <p className="mt-3 text-sm leading-7 text-stone-600">{exportModeDetails[shareMode].description}</p>
       </div>
-      {shareMode === 'shared' ? <SharedViewOutput payload={exportPayload} /> : null}
-      {shareMode === 'summary' ? <SummaryExportOutput payload={exportPayload} /> : null}
+      {shareMode === 'shared' ? (
+        <div className="rounded-[32px] border border-white/35 bg-white/30 p-6 shadow-[0_24px_70px_-42px_rgba(87,63,38,0.3)] backdrop-blur-sm sm:p-8">
+          <p className="text-xs uppercase tracking-[0.3em] text-stone-400">Mode 1</p>
+          <h3 className="mt-4 font-display text-4xl text-stone-900">Preview Full PathWeave</h3>
+          <p className="mt-4 max-w-2xl text-sm leading-7 text-stone-600">
+            Mode 1 now stays inside the share step first, so you can review it in a display window before choosing to open the dedicated immersive page.
+          </p>
+          <div className="mt-8 overflow-hidden rounded-[28px] border border-white/50 bg-white/45 shadow-[0_18px_48px_-30px_rgba(26,26,26,0.3)] backdrop-blur-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-white/50 px-5 py-3">
+              <p className="text-sm uppercase tracking-[0.24em] text-stone-500">Preview</p>
+              <p className="text-xs text-stone-500">Full PathWeave preview</p>
+            </div>
+            <div className="mx-auto aspect-[16/10] w-full max-w-[1080px] bg-[#f9f9f8]">
+              <iframe
+                className="h-full w-full border-0"
+                src="/outputs/full-pathweave?embedded=1"
+                title="Full PathWeave preview"
+              />
+            </div>
+          </div>
+          <div className="mt-8 flex flex-wrap gap-3">
+            <button
+              className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white"
+              onClick={() =>
+                navigate('/outputs/full-pathweave', {
+                  state: {
+                    output: outputData,
+                    shareConfig,
+                    returnTo: '/builder',
+                    returnStep: 5,
+                  },
+                })
+              }
+              type="button"
+            >
+              Open Full PathWeave
+            </button>
+            <p className="self-center text-sm text-stone-500">Summary Export and Structured JSON still render directly here.</p>
+          </div>
+        </div>
+      ) : (
+        <PathWeaveOutputs mode={shareMode} output={outputData} />
+      )}
       <div className="flex flex-wrap gap-3">
-        <button className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white" onClick={() => setReviewOpen(true)} type="button">
+        <button
+          className="rounded-full bg-stone-900 px-5 py-3 text-sm font-medium text-white"
+          onClick={() => {
+            setReviewOpen(true)
+            triggerWeave()
+          }}
+          type="button"
+        >
           Review export
         </button>
         <p className="self-center text-sm text-stone-500">Open the export review modal to confirm stories, media, tags, and export mode.</p>
       </div>
-      {shareMode === 'structured' ? (
-        <pre className="overflow-x-auto rounded-[28px] bg-stone-900 p-6 text-sm leading-7 text-white">
-          {JSON.stringify(exportPayload, null, 2)}
-        </pre>
-      ) : null}
       <ExportReviewModal
         open={reviewOpen}
         setReviewOpen={setReviewOpen}
@@ -2545,240 +3036,410 @@ function ShareStep({ profile, stories, selectedStories, shareMode, setShareMode,
   )
 }
 
-function SharedViewOutput({ payload }) {
+function FullPathWeavePage({ profile, stories, showTagsInProfile }) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const params = new URLSearchParams(location.search)
+  const isExamplePreset = params.get('preset') === 'example'
+  const isEmbedded = params.get('embedded') === '1'
+  const fallbackOutput = isExamplePreset
+    ? buildExampleOutput(exampleProfiles[0])
+    : buildPathWeaveOutput(profile, stories, createDefaultShareConfig(stories, showTagsInProfile))
+  const output = location.state?.output || fallbackOutput
+  const returnTo = location.state?.returnTo || '/builder'
+  const returnStep = location.state?.returnStep ?? 0
+
   return (
-    <section className="rounded-[32px] border border-stone-200/80 bg-white/90 p-6 shadow-soft sm:p-8">
-      <div className="max-w-3xl">
-        <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Shared View</p>
-        <h3 className="mt-3 font-display text-4xl text-stone-900">{payload.name}</h3>
-        <p className="mt-5 text-base leading-8 text-stone-600">
-          {payload.intro || 'A full narrative portfolio will appear here, keeping story, community, and pathways visible together.'}
-        </p>
-      </div>
-
-      <div className="mt-8 grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
-        <div className="space-y-5">
-          {payload.stories.length ? (
-            payload.stories.map((story, index) => (
-              <article key={`${story.title}-${index}`} className="rounded-[28px] bg-stone-50 p-5 ring-1 ring-stone-200">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="font-display text-2xl text-stone-900">{story.title}</p>
-                    <p className="mt-2 text-sm uppercase tracking-[0.22em] text-stone-400">{story.location || 'Story location'}</p>
-                  </div>
-                  {(story.image || story.audio || story.video) && (
-                    <span className="rounded-full bg-white px-3 py-1 text-xs text-stone-500 ring-1 ring-stone-200">
-                      {story.image ? 'Image' : story.audio ? 'Audio' : 'Video'}
-                    </span>
-                  )}
-                </div>
-                <p className="mt-4 text-sm leading-7 text-stone-600">{story.narrative}</p>
-                <div className="mt-4 grid gap-3 text-sm text-stone-600 md:grid-cols-2">
-                  <div className="rounded-[20px] bg-white px-4 py-3 ring-1 ring-stone-200">
-                    <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Involved</p>
-                    <p className="mt-2">{story.involved.join(', ') || 'Shared by the storyteller'}</p>
-                  </div>
-                  <div className="rounded-[20px] bg-white px-4 py-3 ring-1 ring-stone-200">
-                    <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Who benefited</p>
-                    <p className="mt-2">{story.benefited.join(', ') || 'Community connections and future audiences'}</p>
-                  </div>
-                </div>
-              </article>
-            ))
-          ) : (
-            <div className="rounded-[28px] bg-stone-50 p-6 text-sm leading-7 text-stone-500 ring-1 ring-stone-200">
-              Select at least one story to generate the full shared portfolio view.
-            </div>
-          )}
-        </div>
-
-        <aside className="space-y-4">
-          <div className="rounded-[28px] bg-[#f3ede3] p-5 ring-1 ring-stone-200">
-            <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Connections</p>
-            <p className="mt-3 text-sm leading-7 text-stone-600">
-              {payload.connections.community || 'Community contribution and context will appear here in the shared view.'}
-            </p>
-          </div>
-          <div className="rounded-[28px] bg-stone-50 p-5 ring-1 ring-stone-200">
-            <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Future pathways</p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {[...payload.pathways.interests, ...payload.pathways.aspirations, ...payload.pathways.futureDirections].length ? (
-                [...payload.pathways.interests, ...payload.pathways.aspirations, ...payload.pathways.futureDirections].map((item) => (
-                  <Badge key={item} tone="accent">
-                    {item}
-                  </Badge>
-                ))
-              ) : (
-                <Badge tone="accent">Future pathways</Badge>
-              )}
-            </div>
-          </div>
-          {payload.tags.length ? (
-            <div className="rounded-[28px] bg-stone-50 p-5 ring-1 ring-stone-200">
-              <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Approved tags</p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {payload.tags.map((tag) => (
-                  <Badge key={tag} tone="soft">
-                    {tag}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </aside>
-      </div>
-    </section>
+    <FullPathWeaveView
+      onBack={isEmbedded ? null : () => navigate(returnTo, { state: { builderStep: returnStep } })}
+      onBackLabel={returnStep === 5 ? 'Back to share' : 'Back to builder'}
+      output={output}
+      standalone
+    />
   )
 }
 
-function SummaryExportOutput({ payload }) {
+function SummaryExportPage({ profile, stories, showTagsInProfile }) {
+  const location = useLocation()
+  const params = new URLSearchParams(location.search)
+  const isExamplePreset = params.get('preset') === 'example'
+  const isEmbedded = params.get('embedded') === '1'
+  const output = isExamplePreset
+    ? buildExampleOutput(exampleProfiles[0])
+    : buildPathWeaveOutput(profile, stories, createDefaultShareConfig(stories, showTagsInProfile))
+
+  return <SummaryExportView onBack={isEmbedded ? null : null} output={output} standalone />
+}
+
+function StructuredJsonPage({ profile, stories, showTagsInProfile }) {
+  const location = useLocation()
+  const params = new URLSearchParams(location.search)
+  const isExamplePreset = params.get('preset') === 'example'
+  const output = isExamplePreset
+    ? buildExampleOutput(exampleProfiles[0])
+    : buildPathWeaveOutput(profile, stories, createDefaultShareConfig(stories, showTagsInProfile))
+
   return (
-    <section className="rounded-[32px] border border-stone-200/80 bg-stone-50 p-6 ring-1 ring-stone-200 sm:p-8">
-      <p className="text-sm uppercase tracking-[0.24em] text-stone-400">Summary Export</p>
-      <h3 className="mt-3 font-display text-3xl text-stone-900">{payload.name}</h3>
-      <div className="mt-6 space-y-5 text-sm leading-7 text-stone-600">
-        <p>
-          {payload.intro
-            ? payload.intro.length > 180
-              ? `${payload.intro.slice(0, 180).trim()}...`
-              : payload.intro
-            : 'A shorter version of the narrative introduction will appear here.'}
-        </p>
-        <div className="rounded-[24px] bg-white p-5 ring-1 ring-stone-200">
-          <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Story highlights</p>
-          <div className="mt-4 space-y-4">
-            {payload.stories.length ? (
-              payload.stories.slice(0, 3).map((story, index) => (
-                <div key={`${story.title}-${index}`} className="rounded-[20px] bg-stone-50 px-4 py-4 ring-1 ring-stone-200">
-                  <p className="font-medium text-stone-900">{story.title}</p>
-                  <p className="mt-2 text-sm leading-6 text-stone-600">
-                    {story.narrative.length > 140 ? `${story.narrative.slice(0, 140).trim()}...` : story.narrative}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-stone-500">Choose stories to generate a shortened narrative summary.</p>
-            )}
-          </div>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-[24px] bg-white p-5 ring-1 ring-stone-200">
-            <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Community</p>
-            <p className="mt-3">
-              {payload.connections.community
-                ? payload.connections.community.length > 150
-                  ? `${payload.connections.community.slice(0, 150).trim()}...`
-                  : payload.connections.community
-                : 'A short community summary will appear here.'}
-            </p>
-          </div>
-          <div className="rounded-[24px] bg-white p-5 ring-1 ring-stone-200">
-            <p className="text-xs uppercase tracking-[0.22em] text-stone-400">Pathways</p>
-            <p className="mt-3">
-              {[...payload.pathways.aspirations, ...payload.pathways.futureDirections].join(', ') || 'Future pathways summary'}
-            </p>
-          </div>
-        </div>
+    <div className="min-h-screen bg-[#111111] px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mx-auto max-w-6xl">
+        <StructuredJsonView output={output} />
       </div>
-    </section>
+    </div>
   )
 }
 
-function WeaveProgressPanel({ currentStep, profile, stories, showTagsInProfile, shareConfig, shareMode }) {
-  const selectedStories = stories.filter((story) => shareConfig.selectedStories.includes(story.id))
-  const mediaCount = stories.filter((story) => story.image || story.audio || story.video).length
-  const privateCount = stories.filter((story) => story.privacy === 'Keep private for now').length
-  const allPathways = [...splitValue(profile.interests || ''), ...splitValue(profile.aspirations || ''), ...splitValue(profile.futurePathways || '')]
-  const stageNotes = [
-    {
-      title: 'Story thread',
-      detail: firstSentence(profile.narrativeIntro, 'A first introduction has not been woven in yet.'),
-    },
-    {
-      title: 'Connections',
-      detail:
-        splitValue(profile.connectedWith).length || splitValue(profile.involvedPeople).length || splitValue(profile.benefitedPeople).length || profile.placeConnection
-          ? `${splitValue(profile.connectedWith).length} connection groups, ${splitValue(profile.involvedPeople).length} involved, ${splitValue(profile.benefitedPeople).length} benefited.`
-          : 'People, community, and place have not been gathered yet.',
-    },
-    {
-      title: 'Pathways',
-      detail: allPathways.length ? `${allPathways.length} pathway notes gathered so far.` : 'Interests and future directions are still open.',
-    },
-    {
-      title: 'Stories and media',
-      detail: stories.length
-        ? `${stories.length} stories added, with media attached to ${mediaCount} of them.`
-        : 'No story cards have been added yet.',
-    },
-    {
-      title: 'Review decisions',
-      detail:
-        currentStep >= 4
-          ? `${selectedStories.length} stories currently marked for review, ${showTagsInProfile && shareConfig.includeTags ? 'approved tags visible' : 'tags kept secondary'}, ${privateCount} private.`
-          : 'Review decisions happen after the weave is assembled.',
-    },
-    {
-      title: 'Sharing shape',
-      detail:
-        currentStep >= 5
-          ? `${exportModeDetails[shareMode].title} is prepared as the current sharing format.`
-          : 'No shared output is prepared yet.',
-    },
+function mirrorSectionState(sectionStep, currentStep) {
+  if (currentStep < sectionStep) {
+    return 'hidden'
+  }
+
+  if (currentStep === sectionStep) {
+    return 'active'
+  }
+
+  return 'visible'
+}
+
+function mirrorSectionClass(sectionStep, currentStep, pulse) {
+  const state = mirrorSectionState(sectionStep, currentStep)
+
+  if (state === 'hidden') {
+    return 'translate-y-4 opacity-0'
+  }
+
+  if (state === 'active') {
+    return pulse % 2 === 0
+      ? 'relative z-30 -mx-2 translate-y-0 scale-[1.2] opacity-100 brightness-[1.06] saturate-[1.1] ring-[2.5px] ring-black/78 shadow-[0_0_0_1px_rgba(24,24,24,0.16),0_22px_54px_rgba(34,27,20,0.16),0_0_40px_rgba(0,0,0,0.08)]'
+      : 'relative z-30 -mx-3 translate-y-0 scale-[1.26] opacity-100 brightness-[1.1] saturate-[1.18] ring-[3px] ring-black/92 shadow-[0_0_0_1px_rgba(24,24,24,0.22),0_28px_70px_rgba(34,27,20,0.22),0_0_56px_rgba(0,0,0,0.12)]'
+  }
+
+  return 'translate-y-0 opacity-100'
+}
+
+function ghostSectionClass(hidden) {
+  return hidden ? 'opacity-30 blur-[1.6px] saturate-[0.75]' : ''
+}
+
+function TriptychOutputGallery({ output, shareMode, pulse }) {
+  const modes = [
+    { key: 'shared', title: 'Full View', label: 'Narrative portfolio' },
+    { key: 'summary', title: 'Summary View', label: 'Concise narrative' },
+    { key: 'structured', title: 'Structured Data', label: 'Portable record' },
+  ]
+  const orderedModes = [
+    ...modes.filter((mode) => mode.key === shareMode),
+    ...modes.filter((mode) => mode.key !== shareMode),
   ]
 
   return (
-    <div className="overflow-hidden rounded-[32px] border border-white/60 bg-white/85 shadow-[0_36px_90px_-45px_rgba(79,52,29,0.55)] backdrop-blur">
-      <div className="border-b border-stone-200/80 bg-stone-900 px-6 py-5 text-white">
-        <p className="text-xs uppercase tracking-[0.28em] text-white/60">Weave in progress</p>
-        <p className="mt-3 font-display text-2xl text-white">PathWeave in progress</p>
-        <p className="mt-3 text-sm leading-6 text-white/70">
-          This panel tracks what has been gathered so far. It is not the final shared view.
-        </p>
-      </div>
-      <div className="max-h-[calc(100vh-10rem)] space-y-6 overflow-auto p-6">
-        <div className="space-y-4">
-          {wizardSteps.map((item, index) => {
-            const isCurrent = index === currentStep
-            const isComplete = index < currentStep
-
+    <div className="pointer-events-none absolute inset-0 overflow-hidden px-5 pt-14">
+      <div aria-hidden="true" className="absolute inset-x-6 top-14 h-24 rounded-[32px] bg-[radial-gradient(circle_at_center,rgba(214,180,126,0.18),transparent_72%)] blur-2xl" />
+      <div className="relative">
+        <div className="mb-5 px-1 text-center">
+          <p className="text-[10px] uppercase tracking-[0.34em] text-stone-500">Final package</p>
+          <p className="mt-2 text-xs leading-6 text-stone-500">Three forms of the same weave, ready for careful sharing.</p>
+        </div>
+        <div className="relative mx-auto h-[390px] max-w-[220px]">
+          {orderedModes.map((mode, index) => {
+            const active = shareMode === mode.key
             return (
-              <section
-                key={item.id}
-                className={`rounded-[24px] p-4 ring-1 transition ${
-                  isCurrent
-                    ? 'bg-stone-900 text-white ring-stone-900'
-                    : isComplete
-                      ? 'bg-teal-50 text-teal-950 ring-teal-200'
-                      : 'bg-stone-50 text-stone-800 ring-stone-200'
+              <article
+                key={mode.key}
+                className={`absolute left-1/2 w-[210px] -translate-x-1/2 overflow-hidden rounded-[24px] border bg-white/84 px-3 py-3 transition-all duration-500 ${
+                  active
+                    ? pulse % 2 === 0
+                      ? 'scale-[1.08] border-[#d2ab67]/78 shadow-[0_0_0_1px_rgba(210,171,103,0.22),0_0_30px_rgba(210,171,103,0.26)]'
+                      : 'scale-[1.13] border-[#d2ab67]/92 shadow-[0_0_0_1px_rgba(210,171,103,0.3),0_0_42px_rgba(210,171,103,0.34)]'
+                    : 'border-black/5 shadow-[0_18px_36px_-28px_rgba(57,44,28,0.35)]'
                 }`}
+                style={{
+                  top: `${index * 92}px`,
+                  zIndex: active ? 30 : 20 - index,
+                  transform: `translateX(-50%) rotate(${active ? 0 : index === 1 ? -2.4 : 2.2}deg) ${active ? 'scale(1.13)' : index === 1 ? 'scale(0.96)' : 'scale(0.92)'}`,
+                }}
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className={`text-xs uppercase tracking-[0.24em] ${isCurrent ? 'text-white/60' : isComplete ? 'text-teal-800/70' : 'text-stone-400'}`}>
-                      {item.label}
-                    </p>
-                    <p className={`mt-2 font-medium ${isCurrent ? 'text-white' : 'text-stone-900'}`}>{item.phase}</p>
-                  </div>
-                  <span
-                    className={`rounded-full px-3 py-1 text-xs ${
-                      isCurrent
-                        ? 'bg-white/10 text-white'
-                        : isComplete
-                          ? 'bg-white/70 text-teal-900 ring-1 ring-teal-200'
-                          : 'bg-white text-stone-500 ring-1 ring-stone-200'
-                    }`}
-                  >
-                    {isCurrent ? 'Current' : isComplete ? 'Woven in' : 'Waiting'}
-                  </span>
+                <p className="text-[9px] uppercase tracking-[0.28em] text-stone-500">{mode.label}</p>
+                <h4 className="mt-2 font-serif text-lg leading-none text-zinc-900">{mode.title}</h4>
+                <div className="mt-4">
+                  {mode.key === 'shared' ? (
+                    <div className="rounded-[16px] border border-stone-200/80 bg-[#fcfaf4] p-2.5">
+                      <div className="h-11 rounded-[12px] bg-[linear-gradient(135deg,rgba(250,241,220,0.96),rgba(237,232,223,0.84))]" />
+                      <div className="mt-2.5 space-y-1.5">
+                        <div className="h-2 w-4/5 rounded-full bg-stone-300/75" />
+                        <div className="h-2 w-3/5 rounded-full bg-stone-200/85" />
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <div className="h-10 rounded-[10px] bg-white" />
+                          <div className="h-10 rounded-[10px] bg-[#f5f1e9]" />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {mode.key === 'summary' ? (
+                    <div className="rounded-[16px] border border-stone-200/80 bg-[#fcfaf4] p-2.5">
+                      <div className="space-y-1.5">
+                        <div className="h-2 w-2/3 rounded-full bg-stone-400/65" />
+                        <div className="h-2 w-full rounded-full bg-stone-200/90" />
+                        <div className="h-2 w-11/12 rounded-full bg-stone-200/80" />
+                        <div className="h-2 w-4/5 rounded-full bg-stone-200/80" />
+                      </div>
+                      <div className="mt-3 rounded-[10px] bg-white p-2">
+                        <div className="h-2 w-3/4 rounded-full bg-stone-300/70" />
+                        <div className="mt-1.5 h-2 w-full rounded-full bg-stone-200/80" />
+                        <div className="mt-1.5 h-2 w-5/6 rounded-full bg-stone-200/80" />
+                      </div>
+                    </div>
+                  ) : null}
+                  {mode.key === 'structured' ? (
+                    <div className="rounded-[16px] border border-white/8 bg-[#171513] p-2.5 text-[9px] leading-4 text-white/72">
+                      <div className="mb-2 flex gap-1.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-white/30" />
+                        <span className="h-1.5 w-1.5 rounded-full bg-white/20" />
+                        <span className="h-1.5 w-1.5 rounded-full bg-white/10" />
+                      </div>
+                      <p>{'{'}</p>
+                      <p className="pl-2 text-[#d4a373]">"name"</p>
+                      <p className="pl-4 text-white/86">"{output.name}"</p>
+                      <p className="pl-2 text-[#d4a373]">"stories"</p>
+                      <p className="pl-4 text-[#66CCCC]">[{output.stories.length}]</p>
+                      <p className="pl-2 text-[#d4a373]">"tags"</p>
+                      <p className="pl-4 text-[#66CCCC]">[{output.tags.length}]</p>
+                      <p>{'}'}</p>
+                    </div>
+                  ) : null}
                 </div>
-                <p className={`mt-4 text-sm leading-6 ${isCurrent ? 'text-white/78' : isComplete ? 'text-teal-950/80' : 'text-stone-600'}`}>
-                  {stageNotes[index].detail}
-                </p>
-              </section>
+              </article>
             )
           })}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function NarrativeMirrorDocument({ currentStep, output, pulse, shareMode, allStories, shareConfig, showTagsInProfile }) {
+  const visibleStories = output.stories.slice(0, currentStep >= 3 ? 2 : 0)
+  const visibleMedia = output.media.slice(0, currentStep >= 3 ? 3 : 0)
+  const selectedIds = new Set(shareConfig.selectedStories || [])
+  const hiddenStories = allStories.filter((story) => !selectedIds.has(story.id) || story.privacy === 'Keep private for now')
+  const visibleStoryCount = allStories.filter((story) => selectedIds.has(story.id) && story.privacy !== 'Keep private for now').length
+  const mirrorOffsets = [96, -138, -318, -474, -566, -418]
+  const mirrorScales = [0.655, 0.69, 0.75, 0.79, 0.78, 0.69]
+  const translateY = mirrorOffsets[currentStep] ?? mirrorOffsets[0]
+  const scale = mirrorScales[currentStep] ?? mirrorScales[0]
+
+  if (currentStep === 5) {
+    return <TriptychOutputGallery output={output} pulse={pulse} shareMode={shareMode} />
+  }
+
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div aria-hidden="true" className="absolute inset-x-4 top-1/2 h-px -translate-y-1/2 bg-[linear-gradient(90deg,transparent,rgba(210,171,103,0.56),transparent)]" />
+      <div aria-hidden="true" className="absolute inset-x-8 top-1/2 h-36 -translate-y-1/2 rounded-[40px] bg-[radial-gradient(circle_at_center,rgba(214,180,126,0.16),transparent_72%)] blur-xl" />
+      <div aria-hidden="true" className="absolute inset-x-7 top-1/2 h-[176px] -translate-y-1/2 rounded-[40px] border border-[#d2ab67]/26" />
+      <div
+        className="absolute left-1/2 top-0 w-[328px] transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]"
+        style={{ transform: `translateX(-50%) translateY(${translateY}px) scale(${scale})`, transformOrigin: 'top center' }}
+      >
+        <div className="absolute inset-0 rounded-[38px] bg-[radial-gradient(circle_at_top,rgba(214,180,126,0.18),transparent_44%),radial-gradient(circle_at_bottom,rgba(255,255,255,0.48),transparent_42%)] blur-2xl" />
+        <div className="relative overflow-visible rounded-[38px] border border-white/70 bg-[#fbfaf6]/90 p-6 shadow-[0_36px_80px_-42px_rgba(53,41,28,0.58)] backdrop-blur-md">
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 opacity-60"
+            style={{
+              backgroundImage:
+                'radial-gradient(circle at 1px 1px, rgba(96,78,57,0.08) 0.8px, transparent 0.8px), radial-gradient(circle at top, rgba(244,225,188,0.4), transparent 32%)',
+              backgroundSize: '22px 22px, auto',
+            }}
+          />
+          <div className="relative space-y-3">
+            <section className={`rounded-[30px] border border-black/5 bg-white/72 px-5 py-4 transition-all duration-500 ease-out ${mirrorSectionClass(0, currentStep, pulse)}`}>
+              <p className="text-[10px] uppercase tracking-[0.3em] text-stone-500">Full PathWeave</p>
+              <h3 className="mt-3 font-serif text-[2.2rem] leading-[0.92] tracking-tight text-zinc-900">{output.name}</h3>
+              <p className="mt-2 text-sm leading-6 text-zinc-600">{output.identityLine}</p>
+              {output.placeConnection ? <p className="mt-2 text-[11px] uppercase tracking-[0.24em] text-stone-500">{output.placeConnection}</p> : null}
+              <div className="mt-4 h-24 overflow-hidden rounded-[22px] bg-[linear-gradient(135deg,rgba(250,244,231,0.96),rgba(238,234,227,0.84))]">
+                <div className="flex h-full items-end justify-between px-5 pb-4">
+                  <div className="w-20 rounded-t-[1.75rem] bg-[#1f1b18] px-3 py-2 text-[10px] uppercase tracking-[0.22em] text-white/88">Audio</div>
+                  <div className="h-10 w-10 rounded-full border border-[#ecd7ab] bg-white/55" />
+                </div>
+              </div>
+              <p className="mt-3 line-clamp-2 text-sm leading-6 text-zinc-600">{output.introSummary || 'Your story begins with a first line of narrative and context.'}</p>
+            </section>
+
+            <section className={`rounded-[28px] border border-black/5 bg-white/66 px-4 py-3.5 transition-all duration-500 ease-out ${mirrorSectionClass(1, currentStep, pulse)}`}>
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase tracking-[0.3em] text-stone-500">Connections</p>
+                <div className="flex gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#d6b47e]" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#b8c9c6]" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#d8d0c3]" />
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-[1fr_1fr] gap-3">
+                <div className="rounded-[22px] bg-[#faf6ee] p-3">
+                  <div className="relative h-16">
+                    <span className="absolute left-3 top-10 h-2 w-14 rounded-full bg-[#d8c3a0]/60" />
+                    <span className="absolute left-14 top-4 h-4 w-4 rounded-full bg-[#d2ab67]/90 shadow-[0_0_18px_rgba(210,171,103,0.32)]" />
+                    <span className="absolute right-8 top-12 h-3 w-3 rounded-full bg-[#9cbab5]/90" />
+                    <span className="absolute bottom-2 left-9 h-3 w-3 rounded-full bg-[#b6afa1]/90" />
+                  </div>
+                </div>
+                <div className="rounded-[22px] bg-white/78 p-3 text-xs leading-5 text-zinc-600">
+                  <p>{output.connections.connectedWith.slice(0, 2).join(', ') || 'Community and place appear here.'}</p>
+                  <p className="mt-2 line-clamp-2 text-stone-500">{output.connections.summary || 'This section reflects who shaped the story with you.'}</p>
+                </div>
+              </div>
+            </section>
+
+            <section className={`rounded-[28px] border border-black/5 bg-white/66 px-4 py-3.5 transition-all duration-500 ease-out ${mirrorSectionClass(2, currentStep, pulse)}`}>
+              <p className="text-[10px] uppercase tracking-[0.3em] text-stone-500">Pathways</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(output.pathwaysList.length ? output.pathwaysList : ['Future directions', 'Learning pathways', 'Contribution']).slice(0, 4).map((item) => (
+                  <span key={item} className="rounded-full border border-[#dfcfb4] bg-[#fcf8ef] px-3 py-1.5 text-xs text-zinc-700">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </section>
+
+            <section className={`rounded-[28px] border border-black/5 bg-white/66 px-4 py-3.5 transition-all duration-500 ease-out ${mirrorSectionClass(3, currentStep, pulse)}`}>
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase tracking-[0.3em] text-stone-500">Stories</p>
+                <p className="text-[11px] text-stone-500">{visibleStoryCount} woven in</p>
+              </div>
+              <div className="mt-3 space-y-2.5">
+                {visibleStories.length ? (
+                  visibleStories.map((story, index) => (
+                    <article key={story.id} className="grid grid-cols-[54px_1fr] gap-2.5 rounded-[20px] bg-[#fcfaf4] p-2.5">
+                      <div className={`rounded-[14px] ${index % 2 === 0 ? 'bg-[linear-gradient(135deg,#faf1dc,#f2ece2)]' : 'bg-[linear-gradient(135deg,#e8ece8,#f5f1e7)]'}`} />
+                      <div>
+                        <h4 className="font-serif text-sm leading-none text-zinc-900">{story.title}</h4>
+                        <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-zinc-600">{story.summary}</p>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="rounded-[20px] bg-[#fcfaf4] p-3 text-[11px] leading-5 text-stone-500">Story cards appear here as narrative and media are added.</div>
+                )}
+                {currentStep >= 4
+                  ? hiddenStories.slice(0, 1).map((story) => (
+                      <article key={`ghost-${story.id}`} className={`grid grid-cols-[54px_1fr] gap-2.5 rounded-[20px] bg-[#f5f1e9] p-2.5 transition-all duration-500 ${ghostSectionClass(true)}`}>
+                        <div className="rounded-[14px] bg-[linear-gradient(135deg,#ece7dd,#f5f1e7)]" />
+                        <div>
+                          <h4 className="font-serif text-sm leading-none text-zinc-700">{story.title}</h4>
+                          <p className="mt-1.5 text-[10px] leading-4 text-zinc-500">Hidden from the shared weave</p>
+                        </div>
+                      </article>
+                    ))
+                  : null}
+              </div>
+            </section>
+
+            <section className={`rounded-[28px] border border-black/5 bg-white/66 px-4 py-3.5 transition-all duration-500 ease-out ${mirrorSectionClass(4, currentStep, pulse)}`}>
+              <div className="grid grid-cols-[1fr_1fr] gap-3">
+                <div className={`rounded-[20px] bg-[#fcfaf4] p-3 transition-all duration-500 ${ghostSectionClass(!shareConfig.includeMedia)}`}>
+                  <p className="text-[10px] uppercase tracking-[0.24em] text-stone-500">Media</p>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    {(visibleMedia.length ? visibleMedia : [{ label: 'Image' }, { label: 'Audio' }, { label: 'Video' }]).map((item, index) => (
+                      <div key={`${item.label}-${index}`} className="h-10 rounded-[12px] bg-[linear-gradient(135deg,rgba(250,241,220,0.95),rgba(233,229,220,0.82))]" />
+                    ))}
+                  </div>
+                  {!shareConfig.includeMedia ? <p className="mt-2 text-[10px] text-stone-500">Hidden in export</p> : null}
+                </div>
+                <div className={`rounded-[20px] bg-white/78 p-3 transition-all duration-500 ${ghostSectionClass(!(shareConfig.includeTags && showTagsInProfile))}`}>
+                  <p className="text-[10px] uppercase tracking-[0.24em] text-stone-500">Approved tags</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(output.tags.length ? output.tags : ['Optional tags']).slice(0, 3).map((tag) => (
+                      <span key={tag} className="rounded-full border border-stone-200 bg-white px-2.5 py-1 text-[11px] text-zinc-600">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                  {!(shareConfig.includeTags && showTagsInProfile) ? <p className="mt-2 text-[10px] text-stone-500">Hidden in export</p> : null}
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WeaveProgressPanel({ currentStep, pulse, profile, stories, showTagsInProfile, shareConfig, shareMode }) {
+  const navigate = useNavigate()
+  const output = useMemo(
+    () =>
+      buildPathWeaveOutput(profile, stories, {
+        selectedStories: shareConfig.selectedStories,
+        includeMedia: shareConfig.includeMedia,
+        includeTags: shareConfig.includeTags && showTagsInProfile,
+      }),
+    [profile, stories, shareConfig.selectedStories, shareConfig.includeMedia, shareConfig.includeTags, showTagsInProfile],
+  )
+  const canOpenPreview = currentStep !== 5
+
+  return (
+    <div className="relative min-h-[720px] px-3 py-6">
+      <div aria-hidden="true" className="pointer-events-none absolute inset-x-6 top-8 h-32 rounded-full bg-[#efd9aa]/22 blur-3xl" />
+      <div aria-hidden="true" className="pointer-events-none absolute right-4 top-32 h-72 w-48 rounded-full bg-white/22 blur-3xl" />
+
+      <div className="relative">
+        <div className="max-w-[18rem]">
+          <p className="text-[11px] uppercase tracking-[0.34em] text-stone-500/85">Live narrative mirror</p>
+          <p className="mt-3 text-sm leading-7 text-stone-600">
+            A miniature weave of the final PathWeave, updating as story, connection, pathways, and sharing choices take shape.
+          </p>
+        </div>
+
+        <button
+          className={`group relative mt-8 block w-full text-left ${canOpenPreview ? '' : 'cursor-default'}`}
+          onClick={
+            canOpenPreview
+              ? () =>
+                  navigate('/outputs/full-pathweave?preview=true', {
+                    state: {
+                      output,
+                      returnTo: '/builder',
+                      returnStep: currentStep,
+                    },
+                  })
+              : undefined
+          }
+          title={canOpenPreview ? 'Click to see full-screen weave' : 'Final package preview'}
+          type="button"
+        >
+          <span className="pointer-events-none absolute inset-x-10 top-8 h-[92%] rounded-[42px] bg-[radial-gradient(circle_at_top,rgba(214,180,126,0.22),transparent_44%)] opacity-80 blur-2xl transition duration-300 group-hover:opacity-100" />
+          <div className={`relative overflow-hidden rounded-[42px] border border-white/55 bg-white/18 px-3 py-4 shadow-[0_26px_80px_-46px_rgba(57,44,28,0.62)] backdrop-blur-[8px] transition duration-300 ${canOpenPreview ? 'group-hover:-translate-y-1 group-hover:border-[#e2c791]/70' : ''}`}>
+            <div className="flex items-center justify-between px-2 pb-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.3em] text-stone-500">Floating weave</p>
+                <p className="mt-1 text-xs text-stone-500">{canOpenPreview ? 'Click to see full-screen weave' : 'Final package preview'}</p>
+              </div>
+              {canOpenPreview ? (
+                <span className="rounded-full border border-white/65 bg-white/58 px-2.5 py-1 text-[10px] uppercase tracking-[0.24em] text-zinc-700 transition group-hover:bg-[#fff7e8]">
+                  Preview
+                </span>
+              ) : (
+                <span className="rounded-full border border-white/65 bg-white/58 px-2.5 py-1 text-[10px] uppercase tracking-[0.24em] text-zinc-700">
+                  Package
+                </span>
+              )}
+            </div>
+
+            <div className="relative h-[560px] overflow-hidden rounded-[36px] border border-white/60 bg-[linear-gradient(180deg,rgba(252,250,245,0.96),rgba(246,242,236,0.88))]">
+              <NarrativeMirrorDocument
+                allStories={stories}
+                currentStep={currentStep}
+                output={output}
+                pulse={pulse}
+                shareConfig={shareConfig}
+                shareMode={shareMode}
+                showTagsInProfile={showTagsInProfile}
+              />
+            </div>
+          </div>
+        </button>
       </div>
     </div>
   )
@@ -2868,7 +3529,7 @@ function ExportReviewModal({ open, stories, shareConfig, setShareConfig, shareMo
   )
 }
 
-function TagReviewCard({ story, onChange, onPrivacyChange }) {
+function TagReviewCard({ story, onChange, onPrivacyChange, triggerWeave }) {
   const [draftTag, setDraftTag] = useState('')
 
   const addTag = () => {
@@ -2881,54 +3542,67 @@ function TagReviewCard({ story, onChange, onPrivacyChange }) {
   }
 
   return (
-    <article className="rounded-[28px] bg-stone-50 p-5 ring-1 ring-stone-200">
+    <article className="rounded-[28px] bg-white/28 p-5 ring-1 ring-white/45 backdrop-blur-sm">
       <div className="grid gap-5 lg:grid-cols-[1fr_0.9fr]">
         <div>
           <p className="font-display text-2xl text-stone-900">{story.title}</p>
           <p className="mt-3 text-sm leading-7 text-stone-600">{story.narrative}</p>
         </div>
-        <div className="rounded-[22px] bg-white p-4 ring-1 ring-stone-200">
+        <div className="rounded-[22px] bg-white/55 p-4 ring-1 ring-white/65 backdrop-blur-sm">
           <p className="text-xs uppercase tracking-[0.24em] text-stone-400">Suggested tags</p>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
             {(story.suggestedTags || []).map((tag) => (
-              <button
+              <WeaveTag
                 key={tag}
-                className="rounded-full bg-amber-100 px-3 py-1.5 text-xs text-amber-900"
-                onClick={() => onChange(story.id, [...new Set([...(story.acceptedTags || []), tag])])}
-                type="button"
+                onClick={() => {
+                  onChange(story.id, [...new Set([...(story.acceptedTags || []), tag])])
+                  triggerWeave()
+                }}
               >
                 Accept {tag}
-              </button>
+              </WeaveTag>
             ))}
           </div>
           <p className="mt-4 text-xs uppercase tracking-[0.24em] text-stone-400">Accepted</p>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
             {(story.acceptedTags || []).map((tag) => (
-              <button
+              <WeaveTag
                 key={tag}
-                className="rounded-full bg-stone-900 px-3 py-1.5 text-xs text-white"
-                onClick={() => onChange(story.id, (story.acceptedTags || []).filter((item) => item !== tag))}
-                type="button"
+                active
+                onClick={() => {
+                  onChange(story.id, (story.acceptedTags || []).filter((item) => item !== tag))
+                  triggerWeave()
+                }}
               >
                 Remove {tag}
-              </button>
+              </WeaveTag>
             ))}
           </div>
           <div className="mt-4 flex gap-2">
             <input
-              className="flex-1 rounded-full border border-stone-200 bg-stone-50 px-4 py-2 text-sm"
+              className="flex-1 rounded-full border border-white/55 bg-white/45 px-4 py-2 text-sm backdrop-blur-sm outline-none transition focus:border-[rgba(95,76,52,0.28)] focus:bg-white/70"
               onChange={(event) => setDraftTag(event.target.value)}
               placeholder="Edit or add tag"
               value={draftTag}
             />
-            <button className="rounded-full border border-stone-300 px-4 py-2 text-sm" onClick={addTag} type="button">
+            <button
+              className="rounded-full border border-[rgba(95,76,52,0.18)] bg-white/30 px-4 py-2 text-sm transition hover:-translate-y-0.5 hover:bg-white/45"
+              onClick={() => {
+                addTag()
+                triggerWeave()
+              }}
+              type="button"
+            >
               Add
             </button>
           </div>
           <div className="mt-4">
             <SelectField
               label="Visibility"
-              onChange={onPrivacyChange}
+              onChange={(value) => {
+                onPrivacyChange(value)
+                triggerWeave()
+              }}
               options={['Share in my PathWeave', 'Only for selected sharing', 'Keep private for now']}
               value={story.privacy}
             />
@@ -2942,17 +3616,17 @@ function TagReviewCard({ story, onChange, onPrivacyChange }) {
 function Field({ label, value, onChange, placeholder, multiline = false }) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-stone-900">{label}</span>
+      <span className="text-sm font-medium tracking-[0.01em] text-stone-900">{label}</span>
       {multiline ? (
         <textarea
-          className="mt-3 min-h-[132px] w-full rounded-[24px] border border-stone-200 bg-stone-50 px-4 py-4 text-sm leading-7 text-stone-800 outline-none transition focus:border-stone-400 focus:bg-white"
+          className="mt-3 min-h-[132px] w-full rounded-[26px] border border-white/60 bg-white/35 px-4 py-4 text-sm leading-relaxed text-stone-800 outline-none backdrop-blur-sm transition focus:border-[rgba(95,76,52,0.26)] focus:bg-white/60"
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           value={value}
         />
       ) : (
         <input
-          className="mt-3 w-full rounded-[24px] border border-stone-200 bg-stone-50 px-4 py-4 text-sm text-stone-800 outline-none transition focus:border-stone-400 focus:bg-white"
+          className="mt-3 w-full rounded-[26px] border border-white/60 bg-white/35 px-4 py-4 text-sm text-stone-800 outline-none backdrop-blur-sm transition focus:border-[rgba(95,76,52,0.26)] focus:bg-white/60"
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           value={value}
@@ -2965,9 +3639,9 @@ function Field({ label, value, onChange, placeholder, multiline = false }) {
 function SelectField({ label, value, onChange, options }) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-stone-900">{label}</span>
+      <span className="text-sm font-medium tracking-[0.01em] text-stone-900">{label}</span>
       <select
-        className="mt-3 w-full rounded-[24px] border border-stone-200 bg-stone-50 px-4 py-4 text-sm text-stone-800 outline-none transition focus:border-stone-400 focus:bg-white"
+        className="mt-3 w-full rounded-[26px] border border-white/60 bg-white/35 px-4 py-4 text-sm text-stone-800 outline-none backdrop-blur-sm transition focus:border-[rgba(95,76,52,0.26)] focus:bg-white/60"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
@@ -2995,6 +3669,8 @@ function ToggleRow({ checked, label, onToggle }) {
 export default function App() {
   const navigate = useNavigate()
   const location = useLocation()
+  const isStandaloneOutputRoute = location.pathname.startsWith('/outputs/')
+  const builderInitialStep = location.state?.builderStep ?? 0
   const initialState = useMemo(() => loadState(), [])
   const [profile, setProfile] = useState(initialState.profile)
   const [stories, setStories] = useState(initialState.stories)
@@ -3016,6 +3692,19 @@ export default function App() {
   })
 
   useEffect(() => {
+    if (typeof window === 'undefined' || !('scrollRestoration' in window.history)) {
+      return undefined
+    }
+
+    const previous = window.history.scrollRestoration
+    window.history.scrollRestoration = 'manual'
+
+    return () => {
+      window.history.scrollRestoration = previous
+    }
+  }, [])
+
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return
     }
@@ -3030,8 +3719,8 @@ export default function App() {
     )
   }, [profile, stories, draftStory, showTagsInProfile])
 
-  useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' })
   }, [location.pathname])
 
   useEffect(() => {
@@ -3042,8 +3731,24 @@ export default function App() {
     setShowEntryModal(location.pathname === '/' && window.localStorage.getItem(ENTRY_MODAL_SEEN_KEY) !== 'true')
   }, [location.pathname])
 
+  const resetPagePosition = () => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const homeScrollContainer = document.querySelector('[data-home-scroll="true"]')
+    if (homeScrollContainer) {
+      homeScrollContainer.scrollTop = 0
+    }
+
+    document.documentElement.scrollTop = 0
+    document.body.scrollTop = 0
+    window.scrollTo(0, 0)
+  }
+
   const startFlow = () => {
     if (consentAccepted) {
+      resetPagePosition()
       navigate('/builder')
       return
     }
@@ -3054,6 +3759,7 @@ export default function App() {
     setConsentAccepted(true)
     window.localStorage.setItem(CONSENT_KEY, 'true')
     setShowConsent(false)
+    resetPagePosition()
     navigate('/builder')
   }
 
@@ -3069,56 +3775,79 @@ export default function App() {
       setShowConsent(true)
       return
     }
+
+    resetPagePosition()
     navigate(path)
+  }
+
+  const routes = (
+    <Routes>
+      <Route
+        path="/"
+        element={
+          <LandingPage
+            onGoAbout={() => navigate('/about')}
+            onSeeExample={() => navigate('/example')}
+            onStart={startFlow}
+            profile={exampleProfiles[0]}
+            stories={exampleProfiles[0].stories}
+          />
+        }
+      />
+      <Route
+        path="/example"
+        element={<ExampleProfilePage example={exampleProfiles[0]} onBack={() => navigate('/')} onStart={startFlow} />}
+      />
+      <Route
+        path="/about"
+        element={
+          <AboutPage
+            onBack={() => navigate('/')}
+            onGoExample={() => navigate('/example')}
+            onGoHome={() => navigate('/')}
+            onStart={startFlow}
+          />
+        }
+      />
+      <Route
+        path="/builder"
+        element={
+          <BuilderPage
+            draftStory={draftStory}
+            initialStep={builderInitialStep}
+            profile={profile}
+            setDraftStory={setDraftStory}
+            setProfile={setProfile}
+            setShowTagsInProfile={setShowTagsInProfile}
+            setStories={setStories}
+            showTagsInProfile={showTagsInProfile}
+            stories={stories}
+          />
+        }
+      />
+      <Route
+        path="/outputs/full-pathweave"
+        element={<FullPathWeavePage profile={profile} showTagsInProfile={showTagsInProfile} stories={stories} />}
+      />
+      <Route
+        path="/outputs/summary"
+        element={<SummaryExportPage profile={profile} showTagsInProfile={showTagsInProfile} stories={stories} />}
+      />
+      <Route
+        path="/outputs/structured"
+        element={<StructuredJsonPage profile={profile} showTagsInProfile={showTagsInProfile} stories={stories} />}
+      />
+      <Route path="*" element={<Navigate replace to="/" />} />
+    </Routes>
+  )
+
+  if (isStandaloneOutputRoute) {
+    return routes
   }
 
   return (
     <AppShell consentAccepted={consentAccepted} onNavigate={safeNavigate} onStart={startFlow}>
-      <Routes>
-        <Route
-          path="/"
-          element={
-            <LandingPage
-              onGoAbout={() => navigate('/about')}
-              onSeeExample={() => navigate('/example')}
-              onStart={startFlow}
-              profile={exampleProfiles[0]}
-              stories={exampleProfiles[0].stories}
-            />
-          }
-        />
-        <Route
-          path="/example"
-          element={<ExampleProfilePage example={exampleProfiles[0]} onBack={() => navigate('/')} onStart={startFlow} />}
-        />
-        <Route
-          path="/about"
-          element={
-            <AboutPage
-              onBack={() => navigate('/')}
-              onGoExample={() => navigate('/example')}
-              onGoHome={() => navigate('/')}
-              onStart={startFlow}
-            />
-          }
-        />
-        <Route
-          path="/builder"
-          element={
-            <BuilderPage
-              draftStory={draftStory}
-              profile={profile}
-              setDraftStory={setDraftStory}
-              setProfile={setProfile}
-              setShowTagsInProfile={setShowTagsInProfile}
-              setStories={setStories}
-              showTagsInProfile={showTagsInProfile}
-              stories={stories}
-            />
-          }
-        />
-        <Route path="*" element={<Navigate replace to="/" />} />
-      </Routes>
+      {routes}
       <EntrySafetyModal
         open={location.pathname === '/' && showEntryModal}
         onClose={dismissEntryModal}

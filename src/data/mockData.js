@@ -233,17 +233,17 @@ export const suggestedTagLibrary = [
 export const exportModeDetails = {
   shared: {
     label: 'Mode 1',
-    title: 'Shared View',
-    description: 'The main export. Full narrative, portfolio structure, and story-first layout.',
+    title: 'Full PathWeave',
+    description: 'An immersive narrative portfolio that keeps story, contribution, media, and pathways visible together.',
   },
   summary: {
     label: 'Mode 2',
     title: 'Summary Export',
-    description: 'A shorter version that keeps narrative intact while reducing length.',
+    description: 'A concise one-page narrative summary designed for print and PDF export.',
   },
   structured: {
     label: 'Mode 3',
-    title: 'Structured Export',
-    description: 'A JSON preview for interoperability and future integrations.',
+    title: 'Structured JSON',
+    description: 'A portable structured representation that supports user control and narrative data sovereignty.',
   },
 }
